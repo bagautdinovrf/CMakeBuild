@@ -4,7 +4,7 @@
 
 Готовая программа всегда находится в `C:\GitRepos\CmakeBuild\nana\CMakeBuild.exe`. Обычная сборка из этой папки: `powershell -ExecutionPolicy Bypass -File .\build.ps1 -Toolchain MSVC -Configuration Release`. Кэши: `build/msvc`, `build/mingw-release`, `build/mingw-debug`; публикующая цель — CMakeBuildPublish. Все сборки вариантов проводить последовательно.
 
-VERSION — единственный источник версии. Для завершённых исправлений повышать PATCH, возможностей MINOR; вести CHANGELOG.md и проверять FileVersion/ProductVersion.
+Корневой `../VERSION` — единственный источник общей версии FLTK и Nana; отдельный `nana/VERSION` не создавать. Для завершённых исправлений повышать PATCH, возможностей MINOR; вести оба CHANGELOG.md, последовательно пересобирать обе панели и проверять FileVersion/ProductVersion.
 
 Сначала закончить связанные изменения, затем общая сборка и необходимые проверки. Во время работы давать краткий комментарий каждые 30 секунд. Тесты используют отдельные временные INI; пользовательский settings.ini нельзя оставлять изменённым. При временной подмене сохранить оригинал, восстановить через finally и проверить побайтно.
 

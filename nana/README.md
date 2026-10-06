@@ -1,6 +1,6 @@
 # CMakeBuild Nana
 
-Самостоятельная версия панели сборки CMake на C++23 и настоящих виджетах Nana. Версия программы **1.8.6**, функциональный уровень основной панели FLTK 1.8.1. Готовый файл всегда находится в `C:\GitRepos\CmakeBuild\nana\CMakeBuild.exe`; для переноса достаточно одного EXE. Nana и среда выполнения C++ статические. CMake, компиляторы и зависимости собираемых проектов устанавливаются отдельно.
+Самостоятельный вариант панели сборки CMake на C++23 и настоящих виджетах Nana. Общая версия программ Nana и FLTK — **1.8.7**. Готовый файл всегда находится в `C:\GitRepos\CmakeBuild\nana\CMakeBuild.exe`; для переноса достаточно одного EXE. Nana и среда выполнения C++ статические. CMake, компиляторы и зависимости собираемых проектов устанавливаются отдельно.
 
 Используется [NanaPlus](https://github.com/bagautdinovrf/nanaplus/tree/main), форк **Nana 1.8** с библиотечными расширениями CMakeBuild. Основа — официальный snapshot [develop-1.8](https://github.com/cnjinhao/nana/tree/develop-1.8) `efa10557660b6454fc70cbb7f5a64796b1feb882`; закреплённый commit форка — `9fb9ed6239a5e00a22a4b0a1614672ac7d259390`. Архив проверяется SHA256 `5554c64695b608c499d2ca2cee82ea24f8fa3d1c852ad41cfd60b7483aac80b9`. Лицензия Boost Software License находится в `assets/Nana-LICENSE.txt` и встроена в EXE. Назначение расширений описано в [CMAKEBUILD.md форка](https://github.com/bagautdinovrf/nanaplus/blob/main/CMAKEBUILD.md).
 
@@ -81,4 +81,4 @@ MSVC Release x64 1.8.5 проверен: прошли тесты контрол�
 FileVersion/ProductVersion — 1.8.6. Дамп исходного зависания WER 1.8.5 и его
 локальный разбор сохранены в `build/engine-tests/dpi-loop-backup`.
 
-Главные файлы: `src/ui.*` — Nana панель и журнал; `src/settings_dialog.cpp` — форма настроек; `src/controller.*` — операции и очередь запуска; `src/engine.*`, `src/app_state.*`, `src/build_progress.hpp` — актуальные движок и состояние основной версии; `src/platform.*` — Win32, Unicode, совместимый INI и геометрия. `VERSION` — единственный источник версии; история — `CHANGELOG.md`, постоянные правила — `AGENTS.md`.
+Главные файлы: `src/ui.*` — Nana панель и журнал; `src/settings_dialog.cpp` — форма настроек; `src/controller.*` — операции и очередь запуска; `src/engine.*`, `src/app_state.*`, `src/build_progress.hpp` — актуальные движок и состояние основной версии; `src/platform.*` — Win32, Unicode, совместимый INI и геометрия. Корневой `../VERSION` — единственный источник общей версии обеих панелей; история — `CHANGELOG.md` и `../CHANGELOG.md`, постоянные правила — `AGENTS.md`. При изменении версии пересобираются оба варианта.
