@@ -300,9 +300,20 @@ void checkCompleteCaption(Fl_Button& button, float scale) {
     button.resize(x, y, width + 120, height);
     const auto reference = renderWidget(button, scale);
     for (int py = static_cast<int>(6 * scale); py < static_cast<int>((height - 6) * scale); ++py)
-        for (int px = static_cast<int>(31 * scale); px < static_cast<int>((width - 4) * scale); ++px)
-            require(std::equal(actual.pixel(px, py), actual.pixel(px, py) + 3, reference.pixel(px, py)),
-                L"Minimum-width action captions must match their complete, unclipped reference drawing");
+        for (int px = static_cast<int>(31 * scale); px < static_cast<int>((width - 4) * scale); ++px) {
+            const auto* sample = actual.pixel(px, py);
+            const auto* expected = reference.pixel(px, py);
+            if (!std::equal(sample, sample + 3, expected)) {
+                std::cerr << "Caption reference mismatch: label=" << (button.label() ? button.label() : "")
+                    << " scale=" << scale << " geometry=" << x << ',' << y << ',' << width << ',' << height
+                    << " enabled=" << button.active() << " value=" << button.value()
+                    << " pixel=" << px << ',' << py << " actualRGB=" << static_cast<int>(sample[0]) << ','
+                    << static_cast<int>(sample[1]) << ',' << static_cast<int>(sample[2])
+                    << " referenceRGB=" << static_cast<int>(expected[0]) << ','
+                    << static_cast<int>(expected[1]) << ',' << static_cast<int>(expected[2]) << '\n';
+                require(false, L"Minimum-width action captions must match their complete, unclipped reference drawing");
+            }
+        }
     const auto* background = reference.pixel(reference.width - static_cast<int>(20 * scale), reference.height / 2);
     for (int py = static_cast<int>(6 * scale); py < static_cast<int>((height - 6) * scale); ++py)
         for (int px = static_cast<int>((width - 4) * scale); px < static_cast<int>((width + 80) * scale); ++px)
@@ -366,6 +377,49 @@ void checkGearSymmetry(Fl_Button& button, float scale, bool dark) {
     require(ink(middleX, middleY) < 10., L"The gear's central hole must remain open and centered");
 }
 
+void checkBuildModeDrawing(cb::Panel& panel, float scale) {
+    auto& main = panel.button(cb::Control::Build);
+    auto& arrow = panel.button(cb::Control::BuildMenu);
+    const bool originalMode = panel.state().buildAndRun;
+    const bool mainEnabled = main.active() != 0, arrowEnabled = arrow.active() != 0;
+    const std::array geometry{main.x(), main.y(), main.w(), main.h(), arrow.x(), arrow.y(), arrow.w(), arrow.h()};
+    for (const bool combined : {false, true}) {
+        panel.state().buildAndRun = combined;
+        panel.updateControls();
+        main.activate();
+        arrow.activate();
+        main.handle(FL_LEAVE);
+        arrow.handle(FL_LEAVE);
+        main.value(0);
+        arrow.value(0);
+        require(std::string_view(main.label()) == (combined ? "Собрать и запустить" : "Собрать")
+            && std::array{main.x(), main.y(), main.w(), main.h(), arrow.x(), arrow.y(), arrow.w(), arrow.h()} == geometry,
+            L"Changing build mode must update its caption while preserving the entire split-button geometry");
+        const std::array<unsigned char, 3> expected = combined
+            ? std::array<unsigned char, 3>{196, 255, 210} : std::array<unsigned char, 3>{188, 197, 171};
+        for (auto* button : {&main, &arrow}) {
+            const auto raster = renderWidget(*button, scale);
+            const auto* fill = raster.pixel(raster.width / 2, static_cast<int>((button->h() - 6) * scale));
+            require(std::equal(expected.begin(), expected.end(), fill),
+                L"Both normal split-button halves must render the requested gray or green mode color in either theme");
+        }
+        const auto raster = renderWidget(main, scale);
+        int darkTextPixels = 0;
+        for (int y = static_cast<int>(6 * scale); y < static_cast<int>((main.h() - 6) * scale); ++y)
+            for (int x = static_cast<int>(31 * scale); x < static_cast<int>((main.w() - 4) * scale); ++x) {
+                const auto* pixel = raster.pixel(x, y);
+                if (pixel[0] < 90 && pixel[1] < 90 && pixel[2] < 90) ++darkTextPixels;
+            }
+        require(darkTextPixels > 30,
+            L"The gray and green build modes must both draw readable dark caption text in either theme");
+        checkCompleteCaption(main, scale);
+    }
+    panel.state().buildAndRun = originalMode;
+    panel.updateControls();
+    if (!mainEnabled) main.deactivate();
+    if (!arrowEnabled) arrow.deactivate();
+}
+
 void checkMinimumWidthDrawing(cb::Panel& panel) {
     const int x = panel.x(), y = panel.y(), width = panel.w(), height = panel.h();
     int minimumWidth = 0;
@@ -375,6 +429,7 @@ void checkMinimumWidthDrawing(cb::Panel& panel) {
     for (const bool dark : {false, true}) {
         panel.setTheme(dark);
         for (const float scale : {1.f, 1.25f, 1.5f, 2.f}) {
+            checkBuildModeDrawing(panel, scale);
             checkGearSymmetry(panel.button(cb::Control::Settings), scale, dark);
             for (const auto control : {cb::Control::Build, cb::Control::Run, cb::Control::Pin}) {
                 auto& button = panel.button(control);
@@ -385,7 +440,7 @@ void checkMinimumWidthDrawing(cb::Panel& panel) {
                         checkCompleteCaption(button, scale);
                     }
                 };
-                if (control == cb::Control::Build) checkLabels({"Собрать", "Отменить"});
+                if (control == cb::Control::Build) checkLabels({"Собрать", "Собрать и запустить", "Отменить"});
                 else if (control == cb::Control::Run) checkLabels({"Запустить", "Остановить", "Ожидание"});
                 else checkLabels({"Закрепить", "Поверх окон"});
                 button.copy_label(original.c_str());
@@ -717,6 +772,11 @@ void renderPreviews(const std::filesystem::path& outputDirectory) {
                     writePreview(panel, outputDirectory / (L"panel-" + theme + L".ppm"));
                     writePreview(settings, outputDirectory / (L"settings-" + theme + L".ppm"));
                 }
+                state.buildAndRun = true;
+                panel.updateControls();
+                writePreview(panel, outputDirectory / (L"panel-" + theme + L"-build-and-run" + suffix), scale);
+                state.buildAndRun = false;
+                panel.updateControls();
                 panel.button(cb::Control::Settings).handle(FL_ENTER);
                 panel.button(cb::Control::Build).value(1);
                 panel.button(cb::Control::Run).deactivate();

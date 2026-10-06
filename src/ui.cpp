@@ -2,6 +2,7 @@
 #include "platform.hpp"
 #include "version.hpp"
 #include <FL/Fl.H>
+#include <FL/Fl_Image_Surface.H>
 #include <FL/fl_draw.H>
 #include <FL/platform.H>
 #include <algorithm>
@@ -66,11 +67,14 @@ public:
     }
     void draw() override {
         const bool primary=control_==Control::Run || control_==Control::RunMenu;
+        const bool buildMode=(control_==Control::Build || control_==Control::BuildMenu) && panel_.operation()==Operation::Idle;
         const bool selected=(control_==Control::Pin && panel_.state().pinned) || (control_==Control::Log && panel_.state().logVisible);
         const bool enabled=active_r()!=0;
-        auto bg=primary && enabled ? colors_.accent : enabled && (hover_ || value() || selected) ? colors_.soft : colors_.surface;
-        if(enabled && (value() || (primary && hover_))) bg=fl_color_average(bg,colors_.text,value() ? .86f : .94f);
-        const auto fg=!enabled ? fl_color_average(colors_.muted,colors_.surface,.68f) : primary ? colors_.accentText : selected ? colors_.accent : colors_.text;
+        const auto buildText=rgb(36,41,51);
+        auto bg=buildMode && enabled ? (panel_.state().buildAndRun ? rgb(196,255,210) : rgb(188,197,171))
+            : primary && enabled ? colors_.accent : enabled && (hover_ || value() || selected) ? colors_.soft : colors_.surface;
+        if(enabled && (value() || ((primary || buildMode) && hover_))) bg=fl_color_average(bg,buildMode ? buildText : colors_.text,value() ? .86f : .94f);
+        const auto fg=!enabled ? fl_color_average(colors_.muted,colors_.surface,.68f) : buildMode ? buildText : primary ? colors_.accentText : selected ? colors_.accent : colors_.text;
         fl_push_clip(x(),y(),w(),h());fl_color(colors_.surface);fl_rectf(x(),y(),w(),h());
         int bx=x()+1,bw=w()-2;
         if(control_==Control::Run) bw+=panel_.button(Control::RunMenu).w();
@@ -191,12 +195,12 @@ Panel::Panel(AppState& state) : Fl_Double_Window(std::max(500,state.width),state
     journal_=new Journal(15,153,w()-30,std::max(1,h()-171));menu_=new Fl_Menu_Button(0,0,1,1);menu_->textfont(appFont);menu_->textsize(13);menu_->hide();
     buildMenu_=new Fl_Menu_Button(0,0,1,1);buildMenu_->textfont(appFont);buildMenu_->textsize(13);buildMenu_->hide();
     projectMenu_=new Fl_Menu_Button(0,0,1,1);projectMenu_->textfont(appFont);projectMenu_->textsize(13);projectMenu_->hide();
-    buildMenuItems_[0].text="Собрать";buildMenuItems_[1].text="Пересборка";buildMenuItems_[2].text="Очистить";buildMenuItems_[3].text="Собрать и запустить";buildMenuItems_[4].text="CMake";
+    buildMenuItems_[0].text="Собрать";buildMenuItems_[1].text="Собрать и запустить";buildMenuItems_[2].text="Очистить";buildMenuItems_[3].text="Пересобрать";buildMenuItems_[4].text="CMake";
     for(size_t i=0;i<5;++i) {buildMenuItems_[i].labelfont_=appFont;buildMenuItems_[i].labelsize_=13;}
-    buildMenuItems_[0].shortcut_=FL_F+6;buildMenuItems_[3].shortcut_=FL_F+5;
+    buildMenuItems_[0].shortcut_=FL_F+6;buildMenuItems_[1].shortcut_=FL_F+5;
     buildMenu_->menu(buildMenuItems_.data());end();
     resizable(journal_);callback([](Fl_Widget*,void* data){static_cast<Panel*>(data)->closePanel();},this);
-    const std::array<const char*,11> tips{"Выбрать CMakeLists.txt проекта (Ctrl+O)","Собрать проект (F6)","Запустить выбранную цель (Ctrl+F5)","Выбрать цель запуска (↓ / F4)","Закрепить поверх окон","Настройки","Показать журнал","Свернуть","Закрыть","Сборка, пересборка, очистка, сборка и запуск или CMake (↓ / F4)","Недавние проекты (↓ / F4)"};
+    const std::array<const char*,11> tips{"Выбрать CMakeLists.txt проекта (Ctrl+O)","Собрать проект (F6)","Запустить выбранную цель (Ctrl+F5)","Выбрать цель запуска (↓ / F4)","Закрепить поверх окон","Настройки","Показать журнал","Свернуть","Закрыть","Режим сборки, очистка, пересборка или CMake (↓ / F4)","Недавние проекты (↓ / F4)"};
     for(size_t i=0;i<tips.size();++i) buttons_[i]->copy_tooltip(tips[i]);
     status_=state_.settings.cmakeFile.empty() ? L"Выберите CMakeLists.txt" : L"Готов к сборке · "+state_.settings.configuration;
     updateTheme();layout();updateControls();events_=std::make_shared<EventQueue>();
@@ -259,14 +263,22 @@ void Panel::save() {
 }
 void Panel::layout() {
     auto place=[&](Control c,int x,int y,int width,int height){button(c).resize(x,y,width,height);};
-    const auto captionWidth=[](int size,std::initializer_list<const char*> captions) {
-        fl_font(appFont,size);double width=0;
-        for(const auto* caption:captions) width=std::max(width,fl_width(caption));
-        return static_cast<int>(std::ceil(width))+38;
-    };
-    const int pinWidth=std::max(109,captionWidth(12,{"Закрепить","Поверх окон"}));
-    const int buildWidth=std::max(96,captionWidth(13,{"Собрать","Отменить"}));
-    const int runWidth=std::max(107,captionWidth(13,{"Запустить","Остановить","Ожидание"}));
+    // Measure once at 96 DPI: font hinting on the current monitor can otherwise
+    // underestimate captions at 100%, and make logical geometry depend on DPI.
+    static const auto widths=[] {
+        Fl_Image_Surface measuring(1,1,0);
+        Fl_Surface_Device::push_current(&measuring);
+        struct SurfaceGuard {~SurfaceGuard() {Fl_Surface_Device::pop_current();}} guard;
+        const auto captionWidth=[](int size,std::initializer_list<const char*> captions) {
+            fl_font(appFont,size);double width=0;
+            for(const auto* caption:captions) width=std::max(width,fl_width(caption));
+            return static_cast<int>(std::ceil(width))+38;
+        };
+        return std::array{std::max(109,captionWidth(12,{"Закрепить","Поверх окон"})),
+            std::max(96,captionWidth(13,{"Собрать","Собрать и запустить","Отменить"})),
+            std::max(107,captionWidth(13,{"Запустить","Остановить","Ожидание"}))};
+    }();
+    const auto [pinWidth,buildWidth,runWidth]=widths;
     place(Control::Close,w()-40,9,27,27);place(Control::Minimize,w()-71,9,27,27);place(Control::Log,w()-103,9,27,27);place(Control::Settings,w()-135,9,27,27);
     place(Control::Pin,w()-143-pinWidth,9,pinWidth,27);place(Control::Pick,15,57,36,37);place(Control::PickMenu,51,57,23,37);
     place(Control::Run,w()-43-runWidth,57,runWidth,37);place(Control::RunMenu,w()-43,57,28,37);
@@ -362,10 +374,11 @@ void Panel::updateControls() {
     enabled(Control::Pick,!busy);enabled(Control::PickMenu,!busy);enabled(Control::Settings,!busy);enabled(Control::Build,operation_!=Operation::Running);
     enabled(Control::BuildMenu,!busy);
     enabled(Control::Run,operation_==Operation::Running || (canQueueRun() && !waitingForBuild) || (!busy && !state_.targets.empty()));enabled(Control::RunMenu,!busy && !state_.targets.empty());
-    button(Control::Build).copy_label(operation_==Operation::Building ? "Отменить" : "Собрать");
+    button(Control::Build).copy_label(operation_==Operation::Building ? "Отменить" : state_.buildAndRun ? "Собрать и запустить" : "Собрать");
     button(Control::Run).copy_label(operation_==Operation::Running ? "Остановить" : waitingForBuild ? "Ожидание" : "Запустить");button(Control::Pin).copy_label(state_.pinned ? "Поверх окон" : "Закрепить");
     if(!state_.settings.cmakeFile.empty()) button(Control::Pick).copy_tooltip(tooltipLabel(state_.settings.cmakeFile).c_str());
-    button(Control::Build).copy_tooltip(tooltipLabel(L"Собрать (F6); собрать и запустить (F5)\n"+state_.settings.configuration+L" · "+(state_.settings.buildDirectory.empty() ? L"build-cmakebuild" : state_.settings.buildDirectory)).c_str());
+    button(Control::Build).copy_tooltip(tooltipLabel(std::wstring(state_.buildAndRun ? L"Собрать и запустить (F5)" : L"Собрать (F6)")
+        +L"\n"+state_.settings.configuration+L" · "+(state_.settings.buildDirectory.empty() ? L"build-cmakebuild" : state_.settings.buildDirectory)).c_str());
     if(operation_==Operation::Building) button(Control::Build).copy_tooltip(configuring_ ? "Отменить конфигурирование CMake и завершить его процессы" : cleaning_ ? "Отменить очистку и завершить её процессы" : "Отменить сборку и завершить её процессы");
     const auto* target=state_.findChosenTarget();
     button(Control::Run).copy_tooltip(operation_==Operation::Running ? "Остановить приложение и его дочерние процессы"
@@ -382,7 +395,7 @@ void Panel::activate(Control control) {
     switch(control) {
     case Control::Pick:pickProject();break;
     case Control::PickMenu:showRecentProjects();break;
-    case Control::Build:build();break;
+    case Control::Build:build(false,state_.buildAndRun);break;
     case Control::BuildMenu:showBuildActions();break;
     case Control::Run:run();break;
     case Control::RunMenu:showRunTargets();break;
@@ -479,11 +492,15 @@ void Panel::configure() {
 }
 void Panel::showBuildActions() {
     if(operation_!=Operation::Idle) return;
+    for(size_t i=0;i<2;++i) buildMenuItems_[i].flags=FL_MENU_RADIO|(state_.buildAndRun==(i==1) ? FL_MENU_VALUE : 0);
+    buildMenuItems_[1].flags|=FL_MENU_DIVIDER;
     buildMenu_->resize(button(Control::Build).x(),button(Control::Build).y()+button(Control::Build).h(),button(Control::Build).w()+button(Control::BuildMenu).w(),1);
     const auto* chosen=popupBuildMenu ? popupBuildMenu(*buildMenu_) : buildMenu_->popup();
-    if(chosen==buildMenuItems_.data() || chosen==buildMenuItems_.data()+1) build(chosen==buildMenuItems_.data()+1);
+    if(chosen==buildMenuItems_.data() || chosen==buildMenuItems_.data()+1) {
+        state_.buildAndRun=chosen==buildMenuItems_.data()+1;save();updateControls();build(false,state_.buildAndRun);
+    }
     else if(chosen==buildMenuItems_.data()+2) clean();
-    else if(chosen==buildMenuItems_.data()+3) buildAndRun();
+    else if(chosen==buildMenuItems_.data()+3) build(true);
     else if(chosen==buildMenuItems_.data()+4) configure();
 }
 void Panel::run() {

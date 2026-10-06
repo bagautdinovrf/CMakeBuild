@@ -1,7 +1,7 @@
 # NanaPlus: fixed fork snapshot, immutable archive and integrity checks.
 include(FetchContent)
-set(CMAKEBUILD_NANA_REVISION "9fb9ed6239a5e00a22a4b0a1614672ac7d259390")
-set(CMAKEBUILD_NANA_ARCHIVE_SHA256 "5554c64695b608c499d2ca2cee82ea24f8fa3d1c852ad41cfd60b7483aac80b9")
+set(CMAKEBUILD_NANA_REVISION "57fdbd96b64a4c83f0878782997a12b5a5c906b3")
+set(CMAKEBUILD_NANA_ARCHIVE_SHA256 "44ff40e9f64a27eb8e22f5d4fdafa9e421f1419a02e488956b0b05e4d6156db9")
 set(CMAKEBUILD_NANA_SOURCE_DIR "" CACHE PATH "Local pinned NanaPlus source (optional)")
 if(CMAKEBUILD_NANA_SOURCE_DIR)
     set(nana_source "${CMAKEBUILD_NANA_SOURCE_DIR}")
@@ -22,16 +22,24 @@ endif()
 file(READ "${nana_source}/include/nana/gui/widgets/skeletons/text_editor.hpp" editor_header_text)
 file(READ "${nana_source}/source/gui/widgets/skeletons/text_editor.cpp" editor_source_text)
 file(READ "${nana_source}/source/gui/detail/native_window_interface.cpp" native_source_text)
+file(READ "${nana_source}/source/gui/detail/window_manager.cpp" window_manager_text)
+file(READ "${nana_source}/source/gui/detail/bedrock_windows.cpp" bedrock_windows_text)
 # Git may check out CRLF on Windows; normalize only the fingerprint input.
 string(REPLACE "\r\n" "\n" editor_header_text "${editor_header_text}")
 string(REPLACE "\r\n" "\n" editor_source_text "${editor_source_text}")
 string(REPLACE "\r\n" "\n" native_source_text "${native_source_text}")
+string(REPLACE "\r\n" "\n" window_manager_text "${window_manager_text}")
+string(REPLACE "\r\n" "\n" bedrock_windows_text "${bedrock_windows_text}")
 string(SHA256 editor_header_hash "${editor_header_text}")
 string(SHA256 editor_source_hash "${editor_source_text}")
 string(SHA256 native_source_hash "${native_source_text}")
+string(SHA256 window_manager_hash "${window_manager_text}")
+string(SHA256 bedrock_windows_hash "${bedrock_windows_text}")
 if(NOT editor_header_hash STREQUAL "9bfdf9ed5b88cea6c6c554fbb12e03113fb2da5e9ce3204fab440cf6b25ec49c"
     OR NOT editor_source_hash STREQUAL "0e48c68236b22380844cc567bee492e6bb0314bb319280e9df3e79009fe6f97a"
-    OR NOT native_source_hash STREQUAL "a4eb389bc9b0a57aa5258883599605a1d8598bef3d53f3ab18ab787a4fdb9d25")
+    OR NOT native_source_hash STREQUAL "a4eb389bc9b0a57aa5258883599605a1d8598bef3d53f3ab18ab787a4fdb9d25"
+    OR NOT window_manager_hash STREQUAL "61e5b000278f609ed555674b4d871faa865017f188feadc061000bd048712f8b"
+    OR NOT bedrock_windows_hash STREQUAL "dadb7b0b10906f379640ec2c5f55aee86cd7152dc965e8ef2fd677a1f67293c1")
     message(FATAL_ERROR "NanaPlus source must match commit ${CMAKEBUILD_NANA_REVISION} (bagautdinovrf/nanaplus).")
 endif()
 # Compile an unmodified cache copy. Archive timestamps may precede existing

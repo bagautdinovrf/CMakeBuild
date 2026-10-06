@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <map>
+#include <thread>
 #include <utility>
 
 namespace cb::na {
@@ -433,7 +434,7 @@ Panel::Panel(AppState& state, bool hidden)
     theme(platform::darkTheme()); layout(true);
     project_.events().click([this] { selectProject(); });
     recent_.events().click([this] { showProjectMenu(); });
-    build_.events().click([this] { if (state_.settings.cmakeFile.empty() && !hidden_) selectProject(); controller_.build(); refresh(); });
+    build_.events().click([this] { if (state_.settings.cmakeFile.empty() && !hidden_) selectProject(); controller_.build(state_.buildAndRun ? BuildAction::BuildAndRun : BuildAction::Build); refresh(); });
     buildMenu_.events().click([this] { showBuildMenu(); });
     run_.events().click([this] { if (!controller_.run()) showRunMenu(); refresh(); });
     runMenu_.events().click([this] { showRunMenu(); });
@@ -523,9 +524,12 @@ void Panel::drawButton(nana::paint::graphics& g, nana::button& button, unsigned 
     const bool primary=control==2 || control==3;
     const bool selected=(control==4 && state_.pinned) || (control==6 && state_.logVisible);
     const bool enabled=button.enabled();
-    auto bg=primary && enabled ? palette_.accent : enabled && (state.hover || state.pressed || selected) ? palette_.soft : palette_.surface;
-    if(enabled && (state.pressed || (primary && state.hover))) bg=bg.blend(palette_.text,state.pressed ? .14 : .06);
-    const auto fg=!enabled ? palette_.muted.blend(palette_.surface,.32) : primary ? palette_.accentText : selected ? palette_.accent : palette_.text;
+    const bool buildMode=(control==1 || control==9) && controller_.operation()==Operation::Idle && enabled;
+    const auto modeText=nana::color{36,41,51};
+    auto bg=buildMode ? state_.buildAndRun ? nana::color{196,255,210} : nana::color{188,197,171}
+        : primary && enabled ? palette_.accent : enabled && (state.hover || state.pressed || selected) ? palette_.soft : palette_.surface;
+    if(enabled && (state.pressed || ((primary || buildMode) && state.hover))) bg=bg.blend(buildMode ? modeText : palette_.text,state.pressed ? .14 : .06);
+    const auto fg=!enabled ? palette_.muted.blend(palette_.surface,.32) : buildMode ? modeText : primary ? palette_.accentText : selected ? palette_.accent : palette_.text;
     g.rectangle(true,palette_.surface);
     const auto r=buttonRectangles_[control];
     int bx=r.x+1,bw=static_cast<int>(r.width)-2;
@@ -668,7 +672,7 @@ void Panel::layout(bool fitHeight) {
         return static_cast<int>(extent)+38;
     };
     const int pinWidth=std::max(109,captionWidth(12,{L"Закрепить",L"Поверх окон"}));
-    const int buildWidth=std::max(96,captionWidth(13,{L"Собрать",L"Отменить"}));
+    const int buildWidth=std::max(96,captionWidth(13,{L"Собрать",L"Собрать и запустить",L"Отменить"}));
     const int runWidth=std::max(107,captionWidth(13,{L"Запустить",L"Остановить",L"Ожидание"}));
     box(close_,logicalWidth-40,9,27,27); box(minimize_,logicalWidth-71,9,27,27);
     box(log_,logicalWidth-103,9,27,27); box(settings_,logicalWidth-135,9,27,27);
@@ -738,6 +742,7 @@ void Panel::refreshPanel(bool animate) {
         || previous.failed != controller_.failed() || previous.cancelling != controller_.cancellationRequested()
         || previous.canQueue != controller_.canQueueRun() || previous.runQueued != controller_.runQueued()
         || previous.hasTargets != !state_.targets.empty() || previous.pinned != state_.pinned
+        || previous.buildAndRun != state_.buildAndRun
         || previous.logVisible != state_.logVisible || previous.progress != progress || previous.duration != duration
         || previous.project != state_.settings.cmakeFile || previous.status != controller_.status()
         || (journalChanged && duration && previous.durationText != controller_.durationText());
@@ -759,18 +764,20 @@ void Panel::refreshPanel(bool animate) {
     runMenu_.enabled(idle && !state_.targets.empty());
     const std::array<nana::button*,11> buttons{&project_,&build_,&run_,&runMenu_,&pin_,&settings_,&log_,&minimize_,&close_,&buildMenu_,&recent_};
     for(unsigned index=0;index<buttons.size();++index) if(!buttons[index]->enabled()) buttonStates_[index]={};
-    setCaption(build_, building ? L"Отменить" : L"Собрать");
+    setCaption(build_, building ? L"Отменить" : state_.buildAndRun ? L"Собрать и запустить" : L"Собрать");
     setCaption(run_, running ? L"Остановить" : controller_.runQueued() ? L"Ожидание" : L"Запустить");
     setCaption(pin_,state_.pinned ? L"Поверх окон" : L"Закрепить");
     project_.tooltip(state_.settings.cmakeFile.empty() ? "Выбрать CMakeLists.txt проекта (Ctrl+O)" : platform::utf8(state_.settings.cmakeFile));
     run_.tooltip(controller_.runQueued() ? "Запуск после успешной сборки" : running ? "Остановить приложение и дочерние процессы (Ctrl+F5)" : "Запустить или поставить запуск в очередь (Ctrl+F5)");
-    build_.tooltip(building ? "Отменить текущую операцию (F6)" : "Собрать (F6), собрать и запустить (F5)");
+    build_.tooltip(building ? "Отменить текущую операцию (F6)" : state_.buildAndRun
+        ? "Собрать и запустить (F5). Режим кнопки выбирается в меню" : "Собрать (F6). Режим кнопки выбирается в меню");
     settings_.tooltip("Настройки проекта и запуска"); pin_.tooltip(state_.pinned ? "Открепить панель" : "Поверх остальных окон"); log_.tooltip(state_.logVisible ? "Скрыть журнал" : "Показать журнал");
     observedRefresh_ = {
         .operation = operation, .action = controller_.buildAction(),
         .failed = controller_.failed(), .cancelling = controller_.cancellationRequested(),
         .canQueue = controller_.canQueueRun(), .runQueued = controller_.runQueued(),
         .hasTargets = !state_.targets.empty(), .pinned = state_.pinned, .logVisible = state_.logVisible,
+        .buildAndRun = state_.buildAndRun,
         .progress = progress, .duration = duration,
         .project = state_.settings.cmakeFile, .status = controller_.status(), .durationText = controller_.durationText()
     };
@@ -796,8 +803,20 @@ void Panel::showProjectMenu() {
 void Panel::showBuildMenu() {
     if (controller_.operation() != Operation::Idle) return;
     builds_.clear(); prepareMenu(builds_);
-    const std::pair<const char*, BuildAction> actions[] = {{"Собрать\tF6", BuildAction::Build}, {"Пересборка", BuildAction::Rebuild}, {"Очистить", BuildAction::Clean}, {"Собрать и запустить\tF5", BuildAction::BuildAndRun}, {"CMake", BuildAction::Configure}};
-    for (const auto& [name, action] : actions) builds_.append(name, [this, action](nana::menu::item_proxy&) { if (state_.settings.cmakeFile.empty() && !hidden_) selectProject(); controller_.build(action); refresh(); });
+    const std::pair<const char*, BuildAction> actions[] = {{"Собрать\tF6", BuildAction::Build}, {"Собрать и запустить\tF5", BuildAction::BuildAndRun}, {"Очистить", BuildAction::Clean}, {"Пересобрать", BuildAction::Rebuild}, {"CMake", BuildAction::Configure}};
+    for (const auto& [name, action] : actions) {
+        auto item=builds_.append(name, [this, action](nana::menu::item_proxy&) {
+            if (action==BuildAction::Build || action==BuildAction::BuildAndRun) {
+                const bool buildAndRun=action==BuildAction::BuildAndRun;
+                if (state_.buildAndRun!=buildAndRun) { state_.buildAndRun=buildAndRun; controller_.save(); }
+            }
+            if (state_.settings.cmakeFile.empty() && !hidden_) selectProject();
+            controller_.build(action); refresh();
+        });
+        if (action==BuildAction::Build || action==BuildAction::BuildAndRun)
+            item.check_style(nana::menu::checks::option).checked(state_.buildAndRun==(action==BuildAction::BuildAndRun));
+        if (action==BuildAction::BuildAndRun) builds_.append_splitter();
+    }
     builds_.popup(build_, 0, static_cast<int>(build_.size().height)+1);
 }
 void Panel::showRunMenu() {
@@ -826,7 +845,7 @@ int runUiSmoke(const std::wstring& isolatedIni, const std::wstring& imageDirecto
     std::filesystem::create_directories(imageDirectory);
     AppState state{isolatedIni}; state.load();
     state.settings = BuildSettings{}; state.chosenTarget.clear(); state.chosenExecutable.clear(); state.recentProjects.clear();
-    state.logVisible = true; state.logHeight = 365; state.width = 620; state.pinned = false;
+    state.logVisible = true; state.logHeight = 365; state.width = 620; state.pinned = false; state.buildAndRun=false;
     const auto fixture = std::filesystem::path(isolatedIni).parent_path();
     state.settings.cmakeFile = (fixture / L"CMakeLists.txt").wstring();
     { std::ofstream source{std::filesystem::path(state.settings.cmakeFile)}; source << "cmake_minimum_required(VERSION 3.24)\nproject(NanaSmoke NONE)\n"; }
@@ -846,6 +865,40 @@ int runUiSmoke(const std::wstring& isolatedIni, const std::wstring& imageDirecto
     // Observe real drawer callbacks instead of asserting unstable wall times.
     // Idle polls and journal-only updates must not repaint unrelated controls.
     preparePreview(panel.form());
+    const auto buildGeometry=panel.buildButton().size();
+    const auto buildPosition=panel.buildButton().pos();
+    const auto runPosition=panel.runButton().pos();
+    for (bool dark : {false,true}) for (bool buildAndRun : {false,true}) {
+        state.buildAndRun=buildAndRun; panel.theme(dark); panel.refresh();
+        expect(panel.buildButton().caption_wstring()==(buildAndRun ? L"Собрать и запустить" : L"Собрать"), "saved build mode caption");
+        expect(panel.buildButton().size()==buildGeometry && panel.buildButton().pos()==buildPosition
+            && panel.runButton().pos()==runPosition, "build mode changed button geometry");
+        for (const auto control : {1u,9u}) {
+            auto& button=control==1 ? panel.build_ : panel.buildMenu_;
+            nana::paint::graphics graphic{button.size()}; panel.drawButton(graphic,button,control);
+            nana::paint::pixel_buffer pixels{graphic.handle(),nana::rectangle{graphic.size()}};
+            const auto fill=pixels.pixel(static_cast<int>(graphic.width()/2),static_cast<int>(5*panel.scale_)).value & 0xffffff;
+            expect(fill==(buildAndRun ? 0xc4ffd2u : 0xbcc5abu), "idle build split button does not use requested mode color");
+            // Fractional DPI antialiases the icon's thin strokes; even the
+            // darkest arrow pixel may blend with its fill. Inspect only the
+            // glyph interior so the theme's dark outline cannot satisfy this.
+            const auto modeText=0x242933u;
+            bool darkText=false;
+            for (unsigned row=static_cast<unsigned>(10*panel.scale_); row<static_cast<unsigned>(27*panel.scale_); ++row)
+                for (unsigned column=static_cast<unsigned>((control==9 ? 6 : 7)*panel.scale_);
+                    column<static_cast<unsigned>((control==9 ? 22 : 26)*panel.scale_); ++column) {
+                    const auto pixel=pixels.raw_ptr(row)[column].value;
+                    bool darkPixel=true;
+                    for (const auto shift : {0u,8u,16u})
+                        darkPixel&=((pixel>>shift)&255u)<=(((fill>>shift)&255u)+((modeText>>shift)&255u))/2;
+                    darkText|=darkPixel;
+                }
+            expect(darkText, "build mode foreground must stay dark in both themes");
+        }
+        const auto name=std::wstring{buildAndRun ? L"panel-build-and-run-" : L"panel-build-only-"}+(dark ? L"dark.bmp" : L"light.bmp");
+        savePreview(panel.form(),(std::filesystem::path(imageDirectory)/name).wstring());
+    }
+    state.buildAndRun=false; panel.theme(false); panel.refresh();
     struct PaintCounts { unsigned form{}, buttons{}; };
     const auto paints = std::make_shared<PaintCounts>();
     const auto formProbe = panel.form().drawing([paints](nana::paint::graphics&) { ++paints->form; });
@@ -948,6 +1001,56 @@ int runUiSmoke(const std::wstring& isolatedIni, const std::wstring& imageDirecto
     state.settings.cmakeFile.clear(); state.targets.clear(); state.chosenTarget.clear(); state.chosenExecutable.clear();
     click(panel.buildButton()); // Empty project is reported through the real button callback.
     panel.refresh(); expect(panel.controller().operation() == Operation::Idle, "empty project started build");
+    panel.showBuildMenu();
+    expect(panel.builds_.size()==6 && panel.builds_.text(0)=="Собрать\tF6" && panel.builds_.text(1)=="Собрать и запустить\tF5"
+        && panel.builds_.text(3)=="Очистить" && panel.builds_.text(4)=="Пересобрать" && panel.builds_.text(5)=="CMake", "build menu order");
+    expect(panel.builds_.checked(0) && !panel.builds_.checked(1), "build menu must indicate its saved mode");
+    panel.builds_.close();
+    const auto chooseBuild=[&](std::size_t item) {
+        panel.showBuildMenu();
+        for (std::size_t index=0; index<panel.builds_.size(); ++index) panel.builds_.enabled(index,index==item);
+        panel.builds_.goto_next(true); panel.builds_.pick(); platform::drainPreviewMessages();
+    };
+    chooseBuild(1);
+    expect(state.buildAndRun && panel.buildButton().caption_wstring()==L"Собрать и запустить", "menu must select persistent build-and-run mode");
+    AppState restoredMode{isolatedIni}; restoredMode.load(); expect(restoredMode.buildAndRun, "menu mode not saved to isolated INI");
+    for (const auto item : {3u,4u,5u}) { chooseBuild(item); expect(state.buildAndRun, "one-shot build command changed persistent mode"); }
+    chooseBuild(0);
+    restoredMode.load(); expect(!state.buildAndRun && !restoredMode.buildAndRun, "menu must restore and save ordinary build mode");
+    // An absent test-owned CMake path rejects operations quickly, while the
+    // actual callbacks still expose the requested command and run queue.
+    state.settings.cmakeFile=(fixture/L"CMakeLists.txt").wstring();
+    state.settings.cmakeExecutable=(fixture/L"absent-mode-cmake.exe").wstring();
+    state.settings.compiler=CompilerMode::Environment;
+    const auto finishBuild=[&] {
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds{5};
+        while (panel.controller().operation()!=Operation::Idle && std::chrono::steady_clock::now()<deadline) {
+            panel.controller().drainEvents(); platform::drainPreviewMessages(); std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        panel.refresh(); expect(panel.controller().operation()==Operation::Idle, "isolated build mode callback did not finish");
+        expect(!panel.controller().runQueued(), "failed build must discard queued launch");
+    };
+    chooseBuild(1);
+    expect(panel.controller().buildAction()==BuildAction::BuildAndRun && panel.controller().runQueued(), "build-and-run menu did not execute its selected action");
+    finishBuild();
+    click(panel.buildButton());
+    expect(panel.controller().buildAction()==BuildAction::BuildAndRun && panel.controller().runQueued(), "main button did not retain build-and-run mode");
+    finishBuild();
+    panel.shortcut(VK_F6);
+    expect(panel.controller().buildAction()==BuildAction::Build && state.buildAndRun && !panel.controller().runQueued(), "F6 must keep its explicit command without changing mode");
+    finishBuild();
+    chooseBuild(4);
+    expect(panel.controller().buildAction()==BuildAction::Rebuild && state.buildAndRun && !panel.controller().runQueued(), "rebuild must remain one-shot without queued launch");
+    finishBuild();
+    chooseBuild(0);
+    expect(panel.controller().buildAction()==BuildAction::Build && !state.buildAndRun && !panel.controller().runQueued(), "build menu did not execute ordinary build");
+    finishBuild();
+    panel.shortcut(VK_F5);
+    expect(panel.controller().buildAction()==BuildAction::BuildAndRun && !state.buildAndRun && panel.controller().runQueued(), "F5 must keep its explicit command without changing mode");
+    finishBuild();
+    click(panel.buildButton());
+    expect(panel.controller().buildAction()==BuildAction::Build && !panel.controller().runQueued(), "main button did not retain ordinary build mode");
+    finishBuild();
     panel.form().close();
     return 0;
 }
@@ -976,6 +1079,9 @@ int runVisualPreviews(const std::wstring& isolatedIni, const std::wstring& image
         const double scale=visual::scales[index]; const int percent=visual::percentages[index];
         state.logVisible=false; panel.previewScale(scale); panel.theme(dark); panel.refresh();
         capture(visual::View::Panel,dark,scale,percent,visual::compactHeight);
+        state.buildAndRun=true; panel.refresh();
+        capture(visual::View::BuildAndRun,dark,scale,percent,visual::compactHeight);
+        state.buildAndRun=false; panel.refresh();
         if(runSettingsPreviews(panel.form_,panel.controller_,Palette::system(dark),imageDirectory,scale)) throw std::runtime_error("Nana settings preview failed");
         panel.buttonStates_[5].hover=true; panel.buttonStates_[1].pressed=true; panel.run_.enabled(false); panel.runMenu_.enabled(false); panel.previewFocus_=8;
         capture(visual::View::States,dark,scale,percent,visual::compactHeight);

@@ -61,6 +61,24 @@ void runAndWait(OwnedController& owned, const cb::Target& target) {
     require(owned.wakes.load() > 0, L"Real Engine events must wake the controller's UI bridge");
 }
 
+void checkBuildMode(const fs::path& ini) {
+    cb::AppState state{ini.wstring()}; state.load();
+    require(!state.buildAndRun, L"A legacy INI must default to ordinary build");
+    state.buildAndRun=true; state.save();
+    cb::AppState restarted{ini.wstring()}; restarted.load();
+    require(restarted.buildAndRun, L"Build-and-run mode must survive restart");
+    require(cb::platform::readSetting(ini.wstring(), L"BuildAndRun")==L"1", L"Build mode must use the shared Panel INI key");
+    restarted.settings.cmakeFile=(ini.parent_path()/L"first/CMakeLists.txt").wstring();
+    restarted.save(); restarted.selectProject((ini.parent_path()/L"second/CMakeLists.txt").wstring());
+    require(restarted.buildAndRun, L"Project switching must preserve the global button mode");
+    restarted.buildAndRun=false; restarted.save();
+    state.load(); require(!state.buildAndRun, L"Ordinary build mode must also survive restart");
+    for (const auto* value : {L"", L"0", L"2", L"-1", L"invalid", L"1x", L"999999999999999999999999"}) {
+        cb::platform::writeSetting(ini.wstring(), L"BuildAndRun", value);
+        state.load(); require(!state.buildAndRun, L"Malformed mode values must default to ordinary build");
+    }
+}
+
 void checkProjects(const fs::path& ini, const ProjectFixture& first, const ProjectFixture& second) {
     seed(ini, first);
     seed(ini, second);
@@ -394,6 +412,7 @@ int wmain() {
         const auto executable = harness::currentExecutable();
         if (executable.filename().wstring().starts_with(L"run-fixture-")) return runFixture(executable);
         harness::TempDirectory temporary;
+        checkBuildMode(temporary.root / L"build-mode/settings.ini");
         const harness::ProjectFixture first(temporary.root, L"проект [one] 100%", L"custom-build", L"Release",
             L"Alpha", L"Beta & tool", L"run-fixture-alpha.exe", L"run-fixture-beta.exe");
         const harness::ProjectFixture second(temporary.root, L"проект two", L"debug-output", L"Debug",

@@ -112,6 +112,15 @@ checks the combined Build-and-run menu action and local F5/F6/Ctrl+F5 handlers;
 failed and cancelled builds cannot launch an older executable, and subsequent
 ordinary builds cannot inherit a pending launch request.
 
+The first two Build menu entries select the persistent main-button mode as well
+as execute their action. Actual repeated main-button builds and a restarted panel
+prove that combined mode launches the remembered executable exactly once with its
+saved launch profile. F5/F6 keep their explicit actions without changing that
+preference. Clean, Rebuild and CMake execute while combined mode is selected,
+preserve it, and do not automatically launch. Project switches retain this global
+preference. Legacy settings default to build-only; only `BuildAndRun=1` enables
+combined mode, saves normalize to `0`/`1`, and unknown INI keys remain preserved.
+
 A real build target waits for a test-owned release file while the main Run button
 and Ctrl+F5 queue a launch. It checks the first build without an existing EXE or
 chosen target, full rebuild, repeated requests producing one acknowledgement and
@@ -171,7 +180,7 @@ Debug and Release without another explicit configure. Both build-option suites
 also verify unbuilt executable discovery and automatic configuration after changing
 the build type or test switches.
 The fixtures verify preserved source, cache and unrelated build files. `run_ui`
-exercises the actual Собрать/Пересборка/Очистить/Собрать и запустить/CMake dropdown and verifies that the
+exercises the actual Собрать/Собрать и запустить/Очистить/Пересобрать/CMake dropdown and verifies that the
 one-shot full rebuild does not overwrite the saved target or test settings.
 
 ```powershell
@@ -229,10 +238,14 @@ files without showing or activating any native window:
 The renderer uses `Fl_Image_Surface` and the existing widgets' `draw()` methods;
 its sample values and settings remain isolated in a disposable temporary folder.
 
-The preview set contains 60 PPM files: light/dark compact minimum-width panels,
+The preview set contains 68 PPM files: light/dark compact minimum-width panels,
 button states, expanded journals, and Settings at 100/125/150/200%, plus the four
 original unscaled filenames, plus 24 measured and animated progress frames. The
-progress frames check a half-filled bar, the complete percentage caption and
+eight `panel-{light,dark}-build-and-run-{100,125,150,200}.ppm` frames additionally
+show the persistent combined caption and green mode. Raster checks verify both
+split-button halves use `#bcc5ab` for Build and `#c4ffd2` for Build-and-run, dark
+readable caption text in both themes, unclipped captions and unchanged geometry.
+The progress frames check a half-filled bar, the complete percentage caption and
 movement during a real hidden slow CMake configuration. Scaling changes only a scoped graphics-driver value
 while creating a high-resolution image surface; OS and monitor settings are untouched.
 The journal suite checks the gear's reflected raster symmetry and open center,

@@ -585,6 +585,10 @@ void checkLegacySettings(const fs::path& root, const ProjectFixture& first) {
             && legacy.app.settings.compiler == cb::CompilerMode::Mingw
             && legacy.app.settings.target == L"legacy build target",
             L"FLTK panel must load existing global Panel keys without losing values");
+        require(!legacy.app.buildAndRun
+            && std::string_view(legacy.panel.button(cb::Control::Build).label()) == "Собрать",
+            L"Legacy settings without BuildAndRun must retain a build-only main button");
+        legacy.app.buildAndRun = true;
         legacy.panel.save();
     }
     std::array<wchar_t, 128> value{};
@@ -595,11 +599,31 @@ void checkLegacySettings(const fs::path& root, const ProjectFixture& first) {
         static_cast<DWORD>(value.size()), ini.c_str());
     require(std::wstring(value.data()) == L"Не потерять", L"Saving migrated settings must preserve unrelated INI sections");
     HiddenPanel restarted(ini);
-    require(restarted.app.chosenTarget == first.targets.back().name && restarted.app.settings.buildTests
+    require(restarted.app.buildAndRun
+        && std::string_view(restarted.panel.button(cb::Control::Build).label()) == "Собрать и запустить"
+        && restarted.app.chosenTarget == first.targets.back().name && restarted.app.settings.buildTests
         && restarted.app.settings.cmakeExecutable == L"C:\\legacy tools\\cmake.exe"
         && restarted.app.settings.compiler == cb::CompilerMode::Mingw
         && restarted.app.settings.target == L"legacy build target",
         L"Legacy global build and launch settings must migrate into a durable complete project profile");
+}
+
+void checkBuildModeSettings(const fs::path& root) {
+    const auto ini = root / L"build-mode-settings.ini";
+    writeFile(ini, std::string("\xFF\xFE", 2));
+    for (const auto* value : {L"0", L"2", L"1"}) {
+        require(WritePrivateProfileStringW(L"Panel", L"BuildAndRun", value, ini.c_str()) != FALSE,
+            L"Cannot seed an isolated build-mode preference");
+        HiddenPanel hidden(ini);
+        const bool combined = std::wstring_view(value) == L"1";
+        require(hidden.app.buildAndRun == combined
+            && std::string_view(hidden.panel.button(cb::Control::Build).label())
+                == (combined ? "Собрать и запустить" : "Собрать"),
+            L"Only the enabled INI build mode must restore a combined main-button action");
+        hidden.panel.save();
+        require(GetPrivateProfileIntW(L"Panel", L"BuildAndRun", 9, ini.c_str()) == (combined ? 1u : 0u),
+            L"Saving the build mode must normalize its INI value to zero or one");
+    }
 }
 
 void checkRuns(const fs::path& ini, const ProjectFixture& first, const ProjectFixture& second) {
@@ -909,17 +933,20 @@ void checkCompleteProfilesAndRecentProjects(const fs::path& root) {
     {
         HiddenPanel hidden(ini);
         hidden.panel.selectProject(first.project.wstring());
+        hidden.app.buildAndRun = true;
         hidden.app.settings = firstSettings;
         hidden.app.targets = first.targets;
         hidden.app.setRunSettings(first.targets.front().name, firstRun);
         hidden.app.setRunSettings(first.targets.back().name, secondRun);
         hidden.panel.save();
         hidden.panel.selectProject(second.project.wstring());
+        require(hidden.app.buildAndRun, L"Selecting another project must preserve the global combined build mode");
         hidden.app.settings = secondSettings;
         hidden.app.targets = second.targets;
         hidden.app.setRunSettings(second.targets.front().name, secondRun);
         hidden.panel.save();
         hidden.panel.selectProject(first.project.wstring());
+        require(hidden.app.buildAndRun, L"Returning to a saved project must preserve the global combined build mode");
         requireProfile(hidden.app.settings, firstSettings);
         requireRunSettings(hidden.app.runSettingsFor(first.targets.front().name), firstRun);
         requireRunSettings(hidden.app.runSettingsFor(first.targets.back().name), secondRun);
@@ -953,6 +980,7 @@ void checkCompleteProfilesAndRecentProjects(const fs::path& root) {
     }
     {
         HiddenPanel restarted(ini);
+        require(restarted.app.buildAndRun, L"The global combined build mode must survive a panel restart and project switch");
         requireProfile(restarted.app.settings, secondSettings);
         requireRunSettings(restarted.app.runSettingsFor(second.targets.front().name), secondRun);
         restarted.panel.selectProject(first.project.wstring());
@@ -1086,11 +1114,19 @@ void checkBuildAndRun(const fs::path& root) {
     hidden.app.setRunSettings(L"chain", {L"--chain \"argument with spaces\"", working.wstring(),
         {{L"CMAKEBUILD_CHAIN_VALUE", L"success"}}});
     panel.updateControls();
+    auto& mainBuild = panel.button(cb::Control::Build);
+    auto& buildArrow = panel.button(cb::Control::BuildMenu);
+    const std::array mainGeometry{mainBuild.x(), mainBuild.y(), mainBuild.w(), mainBuild.h(),
+        buildArrow.x(), buildArrow.y(), buildArrow.w(), buildArrow.h()};
     const auto requireIdleRun = [&] {
         require(panel.operation() == cb::Operation::Idle
             && std::string_view(panel.button(cb::Control::Run).label()) == "Запустить"
             && (panel.button(cb::Control::Run).active() != 0) == !hidden.app.targets.empty(),
             L"Terminal build/run outcomes must restore the normal Run caption and enable it only when targets exist");
+        require(std::string_view(mainBuild.label()) == (hidden.app.buildAndRun ? "Собрать и запустить" : "Собрать")
+            && std::array{mainBuild.x(), mainBuild.y(), mainBuild.w(), mainBuild.h(),
+                buildArrow.x(), buildArrow.y(), buildArrow.w(), buildArrow.h()} == mainGeometry,
+            L"Terminal outcomes must restore the selected build caption without resizing its split button");
     };
     const auto requireSuccessfulChain = [&] {
         waitUntil([&] { return fs::exists(ran) && panel.operation() == cb::Operation::Idle; },
@@ -1159,14 +1195,51 @@ void checkBuildAndRun(const fs::path& root) {
     require(fileContents(launchCount) == "x", L"A queued full rebuild must launch the selected target exactly once");
     fs::remove(holdEnabled);
     fs::remove(ran);
-    hidden.buildActions.choice = 3;
+    hidden.buildActions.choice = 1;
     panel.button(cb::Control::BuildMenu).do_callback();
     hidden.buildActions.choice.reset();
-    require(panel.operation() == cb::Operation::Building, L"Combined Build menu action must start with a build");
+    require(panel.operation() == cb::Operation::Building && hidden.app.buildAndRun
+        && GetPrivateProfileIntW(L"Panel", L"BuildAndRun", 9, ini.c_str()) == 1,
+        L"Combined Build menu action must start a build and durably select the combined main-button mode");
     require(!panel.button(cb::Control::Run).active()
         && std::string_view(panel.button(cb::Control::Run).label()) == "Ожидание",
         L"Combined Build menu action must immediately display a disabled Waiting button");
     requireSuccessfulChain();
+
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        fs::remove(ran);
+        fs::remove(launchCount);
+        mainBuild.do_callback();
+        requireSuccessfulChain();
+        require(fileContents(launchCount) == "x" && hidden.app.buildAndRun,
+            L"Repeated main-button clicks in combined mode must each build and launch exactly once");
+    }
+    {
+        HiddenPanel restarted(ini);
+        require(restarted.app.buildAndRun
+            && std::string_view(restarted.panel.button(cb::Control::Build).label()) == "Собрать и запустить",
+            L"Restarting the panel must restore the saved combined main-button mode");
+        fs::remove(ran);
+        fs::remove(launchCount);
+        restarted.panel.button(cb::Control::Build).do_callback();
+        waitUntil([&] { return fs::exists(ran) && restarted.panel.operation() == cb::Operation::Idle; },
+            L"The restored combined main button must build and launch the remembered executable");
+        require(!restarted.panel.failed() && fileContents(ran) == "3:success" && fileContents(launchCount) == "x",
+            L"The restored mode must retain launch arguments, directory and environment");
+    }
+
+    for (const size_t action : {3u, 4u, 2u, 3u}) {
+        fs::remove(ran);
+        fs::remove(launchCount);
+        hidden.buildActions.choice = action;
+        buildArrow.do_callback();
+        hidden.buildActions.choice.reset();
+        waitUntil([&] { return panel.operation() == cb::Operation::Idle; },
+            L"A one-shot action in combined mode must finish");
+        require(!panel.failed() && hidden.app.buildAndRun && !fs::exists(ran) && !fs::exists(launchCount),
+            L"Rebuild, CMake and Clean must preserve combined mode without scheduling an automatic launch");
+        requireIdleRun();
+    }
 
     fs::remove(ran);
     require(sendKey(panel, FL_F + 5), L"F5 must invoke the local combined build-and-run action");
@@ -1174,12 +1247,32 @@ void checkBuildAndRun(const fs::path& root) {
         && std::string_view(panel.button(cb::Control::Run).label()) == "Ожидание",
         L"F5 must immediately display a disabled Waiting button during its combined build");
     requireSuccessfulChain();
+    require(hidden.app.buildAndRun, L"F5 must preserve the selected combined main-button mode");
     fs::remove(ran);
     require(sendKey(panel, FL_F + 6), L"F6 must invoke the local build action");
     waitUntil([&] { return panel.operation() == cb::Operation::Idle; }, L"F6 build must finish");
-    require(!panel.failed() && !fs::exists(ran), L"A build-only shortcut must not inherit the previous combined launch request");
+    require(!panel.failed() && !fs::exists(ran) && hidden.app.buildAndRun,
+        L"F6 must build without launching and preserve the selected combined main-button mode");
     require(sendKey(panel, FL_F + 5, FL_CTRL), L"Ctrl+F5 must invoke the local run action");
     requireSuccessfulChain();
+
+    fs::remove(ran);
+    fs::remove(launchCount);
+    hidden.buildActions.choice = 0;
+    buildArrow.do_callback();
+    hidden.buildActions.choice.reset();
+    waitUntil([&] { return panel.operation() == cb::Operation::Idle; }, L"Build-only menu action must finish");
+    require(!panel.failed() && !hidden.app.buildAndRun && !fs::exists(ran) && !fs::exists(launchCount)
+        && GetPrivateProfileIntW(L"Panel", L"BuildAndRun", 9, ini.c_str()) == 0,
+        L"Selecting Build must immediately save build-only mode and finish without launching");
+    requireIdleRun();
+    mainBuild.do_callback();
+    waitUntil([&] { return panel.operation() == cb::Operation::Idle; }, L"Build-only main-button repeat must finish");
+    require(!panel.failed() && !fs::exists(ran) && !fs::exists(launchCount),
+        L"The main button must remain build-only after selecting the first menu action");
+    require(sendKey(panel, FL_F + 5), L"F5 must still provide its explicit combined action in build-only mode");
+    requireSuccessfulChain();
+    require(!hidden.app.buildAndRun, L"F5 must not change the saved build-only main-button mode");
 
     fs::remove(ran);
     writeFile(project, "cmake_minimum_required(VERSION 3.24)\nproject(BuildAndRun LANGUAGES CXX)\n"
@@ -1272,8 +1365,8 @@ void checkBuildActions(const fs::path& root) {
     const int dismissedCalls = hidden.buildActions.calls;
     arrow.do_callback();
     require(hidden.buildActions.calls == dismissedCalls + 1
-            && hidden.buildActions.labels == std::vector<std::string>{"Собрать", "Пересборка", "Очистить", "Собрать и запустить", "CMake"},
-        L"Build dropdown must retain the first four actions and append configure-only CMake");
+            && hidden.buildActions.labels == std::vector<std::string>{"Собрать", "Собрать и запустить", "Очистить", "Пересобрать", "CMake"},
+        L"Build dropdown must present the requested build, combined, clean, rebuild and CMake order");
     require(std::ranges::none_of(hidden.buildActions.flags, [](int flags) { return flags & FL_MENU_INACTIVE; })
             && panel.operation() == cb::Operation::Idle && !fs::exists(selected) && !fs::exists(other),
         L"Dismissing Build actions must not start work or change its selectable entries");
@@ -1316,7 +1409,7 @@ void checkBuildActions(const fs::path& root) {
     require(fs::exists(sentinel) && fs::exists(selected) && !fs::exists(other),
         L"Normal build action must retain artifacts and build only the selected target");
 
-    hidden.buildActions.choice = 1;
+    hidden.buildActions.choice = 3;
     arrow.do_callback();
     finish();
     require(sentinelContents() == "regenerated by full rebuild" && fs::exists(selected) && fs::exists(other),
@@ -1741,6 +1834,7 @@ int wmain(int argc, wchar_t** argv) {
             L"Delta", L"Gamma приложение", L"run-fixture-delta.exe", L"run-fixture-gamma.exe");
         checkSettingsSelection(ini, first);
         checkLegacySettings(temporary.root, first);
+        checkBuildModeSettings(temporary.root);
         checkLiteralMenuAndExpiredTargets(temporary.root);
         checkRuns(ini, first, second);
         checkCompleteProfilesAndRecentProjects(temporary.root);

@@ -19,13 +19,14 @@ inline constexpr std::wstring_view journalText =
     L"Собраны ExampleApp.exe и ExampleTool.exe\n"
     L"Русский UTF-8: Привет, мир! 😀\n";
 
-enum class View { Panel, States, Journal, Settings, Waiting };
-inline constexpr std::array comparableViews{View::Panel, View::States, View::Journal, View::Settings};
+enum class View { Panel, BuildAndRun, States, Journal, Settings, Waiting };
+inline constexpr std::array comparableViews{View::Panel, View::BuildAndRun, View::States, View::Journal, View::Settings};
 
 inline std::wstring imageStem(View view, bool dark, int percent) {
     std::wstring name = view == View::Settings ? L"settings-" : L"panel-";
     name += dark ? L"dark" : L"light";
     if (view == View::States) name += L"-states";
+    else if (view == View::BuildAndRun) name += L"-build-and-run";
     else if (view == View::Journal) name += L"-journal";
     else if (view == View::Waiting) name += L"-waiting";
     return name + L"-" + std::to_wstring(percent);

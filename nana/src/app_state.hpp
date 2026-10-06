@@ -19,6 +19,7 @@ struct AppState {
     std::vector<std::wstring> recentProjects;
     static constexpr std::size_t maximumRecentProjects = 10;
     bool pinned = true;
+    bool buildAndRun = false;
     bool logVisible = false;
     int logHeight = 365;
     int x = std::numeric_limits<int>::min();

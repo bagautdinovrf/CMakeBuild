@@ -105,6 +105,7 @@ void AppState::load() {
     settings.compiler = static_cast<CompilerMode>(std::clamp(integer(configFile, L"Compiler", 0), 0, 3));
     settings.cleanFirst = false;
     pinned = integer(configFile, L"Pinned", 1) != 0;
+    buildAndRun = integer(configFile, L"BuildAndRun", 0) == 1;
     logVisible = integer(configFile, L"LogVisible", 0) != 0;
     logHeight = std::clamp(integer(configFile, L"LogHeight", 365), 240, 4000);
     width = std::max(500, integer(configFile, L"Width", 620));
@@ -213,6 +214,7 @@ void AppState::save() {
     platform::writeSetting(configFile, L"BuildTests", settings.buildTests ? L"1" : L"0");
     platform::writeSetting(configFile, L"Compiler", std::to_wstring(static_cast<int>(settings.compiler)));
     platform::writeSetting(configFile, L"Pinned", pinned ? L"1" : L"0");
+    platform::writeSetting(configFile, L"BuildAndRun", buildAndRun ? L"1" : L"0");
     platform::writeSetting(configFile, L"LogVisible", logVisible ? L"1" : L"0");
     platform::writeSetting(configFile, L"LogHeight", std::to_wstring(logHeight));
     platform::writeSetting(configFile, L"RunTarget", chosenTarget);

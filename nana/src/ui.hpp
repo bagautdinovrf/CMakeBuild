@@ -79,7 +79,7 @@ private:
     struct RefreshState {
         Operation operation = Operation::Idle;
         BuildAction action = BuildAction::Build;
-        bool failed{}, cancelling{}, canQueue{}, runQueued{}, hasTargets{}, pinned{}, logVisible{};
+        bool failed{}, cancelling{}, canQueue{}, runQueued{}, hasTargets{}, pinned{}, logVisible{}, buildAndRun{};
         std::optional<BuildProgress> progress;
         std::optional<std::chrono::milliseconds> duration;
         std::wstring project, status, durationText;
@@ -96,6 +96,7 @@ private:
     void bindKeys(nana::widget&);
     void saveGeometry();
     void prepareMenu(nana::menu&);
+    friend int runUiSmoke(const std::wstring&, const std::wstring&);
     friend int runVisualPreviews(const std::wstring&, const std::wstring&);
 };
 void showSettings(nana::form&, Controller&, const Palette&);

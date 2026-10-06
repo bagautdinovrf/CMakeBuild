@@ -2,10 +2,12 @@
 #include "platform.hpp"
 #include <nana/gui/widgets/panel.hpp>
 #include <nana/gui/widgets/combox.hpp>
+#include <nana/gui/widgets/float_listbox.hpp>
 #include <nana/gui/widgets/checkbox.hpp>
 #include <nana/gui/widgets/scroll.hpp>
 #include <nana/gui/msgbox.hpp>
 #include <nana/gui/element.hpp>
+#include <nana/paint/pixel_buffer.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
@@ -155,17 +157,26 @@ public:
     ChoiceRenderer(const Palette& palette, const double& scale) : palette_(palette), scale_(scale) {}
     void image(bool, unsigned) override {}
     void background(widget_reference, graph_reference graph) override {
-        graph.typeface(nana::paint::font{"Segoe UI", 9.75, {}, static_cast<unsigned>(std::lround(96 * scale_))});
-        graph.rectangle(true, palette_.surface); graph.rectangle(false, palette_.border);
+        // Nana calls background after drawing every item: only paint the rim,
+        // otherwise the completed dropdown rows are erased.
+        graph.rectangle(false, palette_.border);
+        graph.rectangle(nana::rectangle{graph.size()}.pare_off(1), false, palette_.surface);
     }
     void item(widget_reference, graph_reference graph, const nana::rectangle& rectangle, const item_interface* choice, state_t state) override {
+        font(graph);
         graph.rectangle(rectangle, true, state == StateHighlighted ? palette_.accent : palette_.surface);
         const auto height = graph.text_extent_size(choice->text()).height;
         graph.string({rectangle.x + static_cast<int>(8 * scale_), rectangle.y + std::max(0, (static_cast<int>(rectangle.height) - static_cast<int>(height)) / 2)}, choice->text(), state == StateHighlighted ? (palette_.surface.r() > 128 ? nana::color{255,255,255} : nana::color{0,0,0}) : palette_.foreground);
     }
-    unsigned item_pixels(graph_reference graph) const override { return graph.text_extent_size(L"Mg").height + static_cast<unsigned>(std::lround(4 * scale_)); }
+    unsigned item_pixels(graph_reference graph) const override {
+        font(graph);
+        return graph.text_extent_size(L"Mg").height + static_cast<unsigned>(std::lround(4 * scale_));
+    }
 private:
     const Palette& palette_; const double& scale_;
+    void font(graph_reference graph) const {
+        graph.typeface(nana::paint::font{"Segoe UI", 9.75, {}, static_cast<unsigned>(std::lround(96 * scale_))});
+    }
 };
 class SettingsDialog {
 public:
@@ -376,6 +387,73 @@ public:
         styleScrollbars(scrollbar_, palette_, scale_);
         platform::setWindowTheme(form_.native_handle(), dark_);
         nana::api::refresh_window_tree(form_);
+    }
+    void popupSmoke(const std::wstring& directory) {
+        smoking_ = true; themeTimer_.stop();
+        if (compiler_.the_number_of_options() != 4 || targetNames_.size() < 3)
+            throw std::runtime_error("settings dropdown fixtures are incomplete");
+        for (double scale : {1.0, 1.25, 1.5, 2.0}) {
+            previewScale_ = scale; fitToWorkArea(); preparePreview(form_);
+            for (bool dark : {false, true}) {
+                dark_ = dark; applyTheme(Palette::system(dark));
+                for (auto* choice : {&compiler_, &runTarget_}) {
+                    for (std::size_t selection = 0; selection < choice->the_number_of_options(); ++selection) {
+                        nana::arg_mouse mouse{};
+                        mouse.window_handle = choice->handle(); mouse.button = nana::mouse::left_button;
+                        mouse.left_button = true;
+                        mouse.pos = {static_cast<int>(choice->size().width) - px(14), static_cast<int>(choice->size().height) / 2};
+                        mouse.evt_code = nana::event_code::mouse_down;
+                        nana::api::emit_internal_event(mouse.evt_code, choice->handle(), mouse);
+                        const auto popupHandle = nana::api::capture_window();
+                        auto* popup = dynamic_cast<nana::float_listbox*>(nana::api::get_widget(popupHandle));
+                        if (!popup) throw std::runtime_error("settings dropdown did not open");
+                        try {
+                            if (popup->length() != choice->the_number_of_options())
+                                throw std::runtime_error("settings dropdown lost options");
+                            nana::paint::graphics metrics{nana::size{1, 1}}; metrics.typeface(choice->typeface());
+                            const auto pitch = metrics.text_extent_size(L"Mg").height + static_cast<unsigned>(px(4));
+                            if (popup->size().height != popup->length() * pitch + 4)
+                                throw std::runtime_error("settings dropdown initial height does not match its DPI font");
+                            nana::paint::graphics image;
+                            if (!nana::api::window_graphics(popupHandle, image))
+                                throw std::runtime_error("settings dropdown could not be captured");
+                            nana::paint::pixel_buffer pixels{image.handle(), nana::rectangle{image.size()}};
+                            const auto surface = palette_.surface.px_color().value & 0xffffff;
+                            for (std::size_t row = 0; row < popup->length(); ++row) {
+                                if (popup->text(row) != choice->text(row))
+                                    throw std::runtime_error("settings dropdown caption differs from its option");
+                                bool ink = false;
+                                // Inspect row interiors, excluding borders and the scrollbar.
+                                for (unsigned y = 3 + static_cast<unsigned>(row) * pitch; y < 1 + (row + 1) * pitch; ++y)
+                                    for (unsigned x = 2 + static_cast<unsigned>(px(8)); x + 3 < image.width(); ++x)
+                                        ink |= (pixels.raw_ptr(y)[x].value & 0xffffff) != surface;
+                                if (!ink) throw std::runtime_error("settings dropdown row text was erased");
+                            }
+                            if (selection == 0) {
+                                const auto name = std::wstring{choice == &compiler_ ? L"compiler-" : L"run-target-"}
+                                    + (dark ? L"dark-" : L"light-") + std::to_wstring(static_cast<int>(scale * 100)) + L".bmp";
+                                image.save_as_file(platform::utf8((std::filesystem::path(directory) / name).wstring()).c_str());
+                            }
+                            mouse.window_handle = popupHandle;
+                            mouse.pos = {px(12), 2 + static_cast<int>(selection * pitch + pitch / 2)};
+                            for (auto event : {nana::event_code::mouse_move, nana::event_code::mouse_down, nana::event_code::mouse_up}) {
+                                mouse.evt_code = event; mouse.left_button = event != nana::event_code::mouse_up;
+                                nana::api::emit_internal_event(event, popupHandle, mouse);
+                            }
+                            platform::drainPreviewMessages();
+                            if (choice->option() != selection || platform::utf8(choice->caption_wstring()) != choice->text(selection))
+                                throw std::runtime_error("settings dropdown selected the wrong row");
+                            if (choice == &runTarget_ && selectedTarget_ != targetNames_[selection])
+                                throw std::runtime_error("settings dropdown did not switch the run draft");
+                        } catch (...) {
+                            if (nana::api::is_window(popupHandle)) nana::api::close_window(popupHandle);
+                            throw;
+                        }
+                    }
+                }
+            }
+        }
+        form_.close();
     }
     int smoke(const std::wstring& directory, bool commit = false) {
         smoking_ = true; themeTimer_.stop();
@@ -778,6 +856,10 @@ int runSettingsSmoke(nana::form& owner, Controller& controller, const Palette& p
         return std::string{std::istreambuf_iterator<char>{file}, {}};
     };
     const auto before = readIni();
+    {
+        SettingsDialog dialog{owner, controller, palette}; dialog.popupSmoke(directory.wstring());
+    }
+    if (readIni() != before) throw std::runtime_error("dropdown selection changed INI before saving");
     {
         SettingsDialog dialog{owner, controller, palette};
         dialog.smoke(directory.wstring()); dialog.form().close();
