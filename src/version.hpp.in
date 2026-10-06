@@ -1,0 +1,5 @@
+#pragma once
+
+namespace cb {
+inline constexpr wchar_t appTitle[] = L"CMakeBuild @PROJECT_VERSION@";
+}

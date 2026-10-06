@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>CMakeBuild</title>
+  <desc>Three build blocks and a play arrow on a cobalt blue rounded square.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#337bef"/>
+      <stop offset="1" stop-color="#124cac"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#background)"
+        stroke="#68a0ff" stroke-opacity=".55" stroke-width="1.5"/>
+  <g fill="#ffffff">
+    <rect x="134" y="66" width="56" height="56" rx="5"/>
+    <rect x="66" y="134" width="56" height="56" rx="5"/>
+    <rect x="134" y="134" width="56" height="56" rx="5"/>
+  </g>
+  <path d="M78 79 L78 123 L116 101 Z" fill="#acdfff"/>
+</svg>

@@ -1,0 +1,2 @@
+// Use the panel's manifest so hidden UI tests load Common Controls v6 too.
+1 24 "@CMAKEBUILD_UI_MANIFEST_PATH@"
