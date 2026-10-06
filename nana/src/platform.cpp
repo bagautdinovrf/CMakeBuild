@@ -61,6 +61,10 @@ DesktopRect stableMonitorBounds(HMONITOR monitor, DesktopRect bounds) {
         std::max(static_cast<int>(area.left), bounded(static_cast<long long>(area.right) - bounds.width)));
     inside.y = std::clamp(bounds.y, static_cast<int>(area.top),
         std::max(static_cast<int>(area.top), bounded(static_cast<long long>(area.bottom) - bounds.height)));
+    if (bounds.width > area.right - area.left)
+        inside.x = bounded((static_cast<long long>(area.left) + area.right - bounds.width) / 2);
+    if (bounds.height > area.bottom - area.top)
+        inside.y = bounded((static_cast<long long>(area.top) + area.bottom - bounds.height) / 2);
     if (!belongs(inside)) return bounds;
     // Find the first monitor-consistent position, instead of snapping the
     // entire window inside the screen when only a few pixels crossed the seam.
@@ -112,8 +116,7 @@ struct DpiChangeHandler::Impl {
     HWND window{};
     std::function<void(double, DesktopRect)> callback;
     bool handling{};
-    bool queued{};
-    UINT deferredMessage{RegisterWindowMessageW(L"CMakeBuild.Nana.PendingDpiChange")};
+    UINT_PTR deferredTimer{};
     std::optional<std::pair<double, DesktopRect>> pending;
 
     void dispatchPending() {
@@ -127,12 +130,15 @@ struct DpiChangeHandler::Impl {
             const DpiBoundsScope boundsScope{window, static_cast<unsigned>(std::lround(change.first * 96))};
             callback(change.first, change.second);
         }
-        if (pending && window && !queued)
-            queued = PostMessageW(window, deferredMessage, reinterpret_cast<WPARAM>(this), 0) != FALSE;
+        if (pending && window && !deferredTimer)
+            deferredTimer = SetTimer(window, reinterpret_cast<UINT_PTR>(this), 1, nullptr);
     }
 
     ~Impl() {
-        if (window) RemoveWindowSubclass(window, procedure, reinterpret_cast<UINT_PTR>(this));
+        if (window) {
+            if (deferredTimer) KillTimer(window, deferredTimer);
+            RemoveWindowSubclass(window, procedure, reinterpret_cast<UINT_PTR>(this));
+        }
     }
     static LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
         UINT_PTR id, DWORD_PTR data) {
@@ -141,8 +147,8 @@ struct DpiChangeHandler::Impl {
             RemoveWindowSubclass(window, procedure, id);
             self.window = nullptr;
             self.pending.reset();
-        } else if (message == self.deferredMessage && wParam == reinterpret_cast<WPARAM>(&self)) {
-            self.queued = false;
+        } else if (message == WM_TIMER && self.deferredTimer && wParam == self.deferredTimer) {
+            KillTimer(window, std::exchange(self.deferredTimer, 0));
             self.dispatchPending();
             return 0;
         } else if (message == WM_DPICHANGED) {
@@ -163,7 +169,7 @@ void DpiChangeHandler::bind(void* nativeHandle, std::function<void(double, Deskt
     auto handler = std::make_unique<Impl>();
     handler->window = static_cast<HWND>(nativeHandle);
     handler->callback = std::move(callback);
-    if (!handler->window || !handler->callback || !handler->deferredMessage || !SetWindowSubclass(handler->window, Impl::procedure,
+    if (!handler->window || !handler->callback || !SetWindowSubclass(handler->window, Impl::procedure,
         reinterpret_cast<UINT_PTR>(handler.get()), reinterpret_cast<DWORD_PTR>(handler.get())))
         throw std::runtime_error("Could not install the window DPI handler");
     impl_ = std::move(handler);

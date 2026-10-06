@@ -29,6 +29,6 @@ set_tests_properties(nana_controller PROPERTIES TIMEOUT 120 LABELS "integration;
 add_test(NAME nana_ui COMMAND NanaUiSmoke "${CMAKE_CURRENT_BINARY_DIR}/ui-smoke")
 set_tests_properties(nana_ui PROPERTIES TIMEOUT 45 LABELS "nana;ui")
 add_test(NAME nana_dpi COMMAND NanaDpiTests "${CMAKE_CURRENT_BINARY_DIR}/dpi-tests")
-set_tests_properties(nana_dpi PROPERTIES TIMEOUT 45 LABELS "nana;ui;dpi")
+set_tests_properties(nana_dpi PROPERTIES TIMEOUT 90 LABELS "nana;ui;dpi")
 add_test(NAME nana_editor COMMAND NanaEditorTests)
 set_tests_properties(nana_editor PROPERTIES TIMEOUT 45 LABELS "nana;ui;editor;regression")

@@ -214,6 +214,20 @@ void mouseMessage(HWND window, UINT message, WPARAM buttons, nana::point point) 
         MAKELPARAM(static_cast<WORD>(point.x), static_cast<WORD>(point.y)));
 }
 
+template<class Predicate>
+bool waitForPreviewMessages(Predicate&& ready, DWORD timeout = 1000) {
+    const auto deadline = GetTickCount64() + timeout;
+    for (;;) {
+        cb::platform::drainPreviewMessages();
+        if (ready()) return true;
+        const auto now = GetTickCount64();
+        if (now >= deadline) return false;
+        const auto result = MsgWaitForMultipleObjectsEx(0, nullptr,
+            static_cast<DWORD>(deadline - now), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        expect(result != WAIT_FAILED, "Could not wait for test-owned preview messages");
+    }
+}
+
 void testNestedDpiChanges() {
     // This fixture owns no controller/INI and never activates. Every DPI
     // callback deliberately causes another synchronous, alternating change;
@@ -258,7 +272,8 @@ void testNestedDpiChanges() {
     // change. The most recent nested message must survive the work limit.
     generateNested = false;
     const auto synchronousCount = observed.size();
-    cb::platform::drainPreviewMessages();
+    expect(waitForPreviewMessages([&] { return observed.size() > synchronousCount; }),
+        "The deferred DPI timer did not return to message dispatch within one second");
     expect(observed.size() == synchronousCount + 1 && observed.back() == lastPendingDpi
         && lastObservedBounds.x == lastPendingBounds.x && lastObservedBounds.y == lastPendingBounds.y
         && lastObservedBounds.width == lastPendingBounds.width
@@ -267,10 +282,11 @@ void testNestedDpiChanges() {
 
     // Verify that the UI can dispatch the next queued native message after
     // the alternating callbacks, and a fresh DPI transaction still works.
-    expect(PostMessageW(window, WM_NULL, 0, 0) != FALSE,
+    constexpr UINT responseMessage = WM_APP + 0x41D;
+    expect(PostMessageW(window, responseMessage, 0, 0) != FALSE,
         "Could not queue a native message after nested DPI changes");
     MSG message{};
-    expect(PeekMessageW(&message, window, WM_NULL, WM_NULL, PM_REMOVE) != FALSE,
+    expect(PeekMessageW(&message, window, responseMessage, responseMessage, PM_REMOVE) != FALSE,
         "UI did not return to native message dispatch after nested DPI changes");
     DispatchMessageW(&message);
     const auto previous = observed.size();
@@ -576,6 +592,100 @@ void testPhysicalMonitorSeams() {
     std::cout << "Physical monitor seam corrections: " << cases << '\n';
 }
 
+void testNativeDpiMonitorSeams() {
+    std::vector<Monitor> monitors;
+    expect(EnumDisplayMonitors(nullptr, nullptr, collectMonitor, reinterpret_cast<LPARAM>(&monitors)) != FALSE,
+        "Could not enumerate monitors for native DPI seam transitions");
+    struct OwnedWindow {
+        HWND handle{};
+        ~OwnedWindow() { if (handle) DestroyWindow(handle); }
+    } fixture{CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        L"STATIC", L"CMakeBuild test-owned native DPI seam", WS_POPUP,
+        -32000, -32000, 200, 80, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr)};
+    expect(fixture.handle != nullptr && SetLayeredWindowAttributes(fixture.handle, 0, 0, LWA_ALPHA) != FALSE,
+        "Could not create a transparent native DPI seam window");
+    bool resizeOnDpi{}, boundsApplied = true;
+    int seam{}, y{}, direction{};
+    std::vector<unsigned> reported;
+    HMONITOR firstCallbackMonitor{};
+    cb::platform::DesktopRect lastCandidate{};
+    cb::platform::DpiChangeHandler handler;
+    handler.bind(fixture.handle, [&](double scale, cb::platform::DesktopRect) {
+        if (!resizeOnDpi) return;
+        if (reported.empty())
+            firstCallbackMonitor = MonitorFromWindow(fixture.handle, MONITOR_DEFAULTTONEAREST);
+        reported.push_back(static_cast<unsigned>(std::lround(scale * 96.0)));
+        const int width = static_cast<int>(733 * scale), height = static_cast<int>(150 * scale);
+        // Deliberately reproduce a resize/drag anchor that reverses the
+        // majority monitor. The platform's active native DPI scope must
+        // retain Windows' new monitor while applying the requested scale.
+        lastCandidate = {seam - width / 2 - direction * 20, y, width, height};
+        boundsApplied = cb::platform::setWindowBounds(fixture.handle, lastCandidate) && boundsApplied;
+    });
+    const auto moveInside = [&](const Monitor& monitor) {
+        expect(SetWindowPos(fixture.handle, nullptr, monitor.bounds.left + 8, monitor.bounds.top + 8,
+            200, 80, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER) != FALSE,
+            "Could not move the native DPI fixture inside a monitor");
+        cb::platform::drainPreviewMessages();
+        expect(MonitorFromWindow(fixture.handle, MONITOR_DEFAULTTONEAREST) == monitor.handle,
+            "Native DPI fixture did not reach the requested monitor");
+        const auto dpi = GetDpiForWindow(fixture.handle);
+        expect(dpi != 0, "Could not read a physical monitor's native window DPI");
+        return dpi;
+    };
+    unsigned cases{};
+    for (const auto& left : monitors) for (const auto& right : monitors) {
+        if (left.bounds.right != right.bounds.left) continue;
+        const LONG overlapTop = (std::max)(left.bounds.top, right.bounds.top);
+        const LONG overlapBottom = (std::min)(left.bounds.bottom, right.bounds.bottom);
+        for (const bool targetOnRight : {false, true}) {
+            const auto& target = targetOnRight ? right : left;
+            const auto& source = targetOnRight ? left : right;
+            resizeOnDpi = false;
+            const auto targetDpi = moveInside(target), sourceDpi = moveInside(source);
+            if (targetDpi == sourceDpi) continue;
+            const int width = pixels(733, targetDpi), height = pixels(150, targetDpi);
+            const int sourceWidth = pixels(733, sourceDpi), sourceHeight = pixels(150, sourceDpi);
+            const int fixtureHeight = (std::max)(height, sourceHeight);
+            if (overlapBottom - overlapTop < fixtureHeight
+                || target.bounds.right - target.bounds.left < (std::max)(width, sourceWidth)
+                || source.bounds.right - source.bounds.left < (std::max)(width, sourceWidth)) continue;
+            seam = left.bounds.right;
+            direction = targetOnRight ? 1 : -1;
+            y = static_cast<int>(overlapTop + (overlapBottom - overlapTop - fixtureHeight) / 2);
+            // Set a source-DPI-sized window 20 pixels onto the new monitor.
+            // Windows itself sends WM_DPICHANGED; no synthetic DPI event or
+            // physical cursor/button input participates in this scenario.
+            reported.clear();
+            firstCallbackMonitor = nullptr;
+            boundsApplied = true;
+            resizeOnDpi = true;
+            const bool moved = SetWindowPos(fixture.handle, nullptr,
+                seam - sourceWidth / 2 + direction * 20, y, sourceWidth, sourceHeight,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER) != FALSE;
+            expect(moved && !reported.empty() && reported.size() <= 4,
+                "Native monitor crossing did not return with bounded synchronous DPI callbacks");
+            cb::platform::drainPreviewMessages();
+            expect(boundsApplied && firstCallbackMonitor == target.handle,
+                "Native WM_DPICHANGED did not expose the new monitor before its resize callback");
+            expect(GetDpiForWindow(fixture.handle) == targetDpi && reported.back() == targetDpi
+                && MonitorFromWindow(fixture.handle, MONITOR_DEFAULTTONEAREST) == target.handle,
+                "Native DPI resize reversed the physical monitor transition");
+            const auto actual = windowRectangle(fixture.handle, "native DPI monitor seam");
+            expect(actual.right - actual.left == width && actual.bottom - actual.top == height
+                && actual.top == y,
+                "Native DPI seam correction changed the requested dimensions or unrelated axis");
+            const int correction = direction * (actual.left - lastCandidate.x);
+            expect(correction >= 20 && correction <= 22,
+                "Native DPI seam correction was larger than the nearest boundary plus its pixel margin");
+            expect(IsWindowVisible(fixture.handle) == FALSE, "Native DPI seam fixture became visible");
+            resizeOnDpi = false;
+            ++cases;
+        }
+    }
+    std::cout << "Native mixed-DPI monitor seam transitions: " << cases << '\n';
+}
+
 void testActualMonitors(const std::filesystem::path& root) {
     std::vector<Monitor> monitors;
     expect(EnumDisplayMonitors(nullptr, nullptr, collectMonitor, reinterpret_cast<LPARAM>(&monitors)) != FALSE,
@@ -627,16 +737,36 @@ int wmain(int argc, wchar_t** argv) {
     try {
         const auto root = std::filesystem::absolute(argv[1]);
         std::filesystem::create_directories(root);
+        // Nana posts WM_QUIT when its last form closes. Keep this test-owned
+        // offscreen form alive across fixtures so deferred native messages
+        // remain dispatchable between independent test windows.
+        std::cout << "Create test lifetime guard" << std::endl;
+        nana::form lifetimeGuard{nana::rectangle{-32000, -32000, 120, 80},
+            nana::appearance(false, false, false, false, false, false, false)};
+        std::cout << "Prepare test lifetime guard" << std::endl;
+        cb::na::preparePreview(lifetimeGuard);
+        lifetimeGuard.hide();
         for (const bool logVisible : {false, true}) {
+            std::cout << "Synthetic DPI: " << (logVisible ? "journal" : "compact") << " width=620" << std::endl;
             testSynthetic(root, logVisible, 620, 365);
+            std::cout << "Synthetic DPI: " << (logVisible ? "journal" : "compact") << " width=733" << std::endl;
             testSynthetic(root, logVisible, 733, 417);
         }
+        std::cout << "Drag anchor geometry" << std::endl;
         testDragAnchorGeometry();
+        std::cout << "Nested DPI changes" << std::endl;
         testNestedDpiChanges();
+        std::cout << "Native drag and capture" << std::endl;
         testDragCapture(root);
+        std::cout << "Physical monitor seam geometry" << std::endl;
         testPhysicalMonitorSeams();
+        std::cout << "Native mixed-DPI monitor seam integration" << std::endl;
+        testNativeDpiMonitorSeams();
         // A fresh Panel restores real monitor DPI after the synthetic messages.
+        std::cout << "Physical monitor panel transitions" << std::endl;
         testActualMonitors(root);
+        lifetimeGuard.close();
+        cb::platform::drainPreviewMessages();
         cb::platform::shutdown();
         std::cout << "Nana native WM_DPICHANGED/WM_SIZE regression checks passed\n";
         return 0;
