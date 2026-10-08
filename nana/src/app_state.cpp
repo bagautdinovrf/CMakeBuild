@@ -91,6 +91,17 @@ std::wstring readEncoded(const std::wstring& file, const std::wstring& key, cons
     }
     return result;
 }
+
+std::wstring readCMakeArguments(const std::wstring& file, const std::wstring& section,
+    const std::wstring& fallback = {}) {
+    // A zero chunk count is an explicitly empty field, not a missing value.
+    if (!platform::readSetting(file, L"CMakeArgumentsChunks", L"", section.c_str()).empty())
+        return readEncoded(file, L"CMakeArguments", section);
+    // The profile API also trims its default text, so return the fallback here.
+    constexpr auto missing = L"\x1f";
+    const auto plain = platform::readSetting(file, L"CMakeArguments", missing, section.c_str());
+    return plain == missing ? fallback : plain;
+}
 }
 
 void AppState::load() {
@@ -99,6 +110,7 @@ void AppState::load() {
     settings.cmakeFile = platform::readSetting(configFile, L"Project");
     settings.buildDirectory = platform::readSetting(configFile, L"BuildDirectory");
     settings.cmakeExecutable = platform::readSetting(configFile, L"CMake");
+    settings.cmakeArguments = readCMakeArguments(configFile, L"Panel");
     settings.configuration = platform::readSetting(configFile, L"Configuration", L"Release");
     settings.target = platform::readSetting(configFile, L"BuildTarget");
     settings.buildTests = integer(configFile, L"BuildTests", 0) != 0;
@@ -143,6 +155,7 @@ void AppState::loadProject(bool switching) {
         if (switching) fallback.cmakeExecutable = settings.cmakeExecutable;
         settings.buildDirectory = platform::readSetting(configFile, L"BuildDirectory", fallback.buildDirectory.c_str(), section.c_str());
         settings.cmakeExecutable = platform::readSetting(configFile, L"CMake", fallback.cmakeExecutable.c_str(), section.c_str());
+        settings.cmakeArguments = readCMakeArguments(configFile, section, fallback.cmakeArguments);
         settings.configuration = platform::readSetting(configFile, L"Configuration", fallback.configuration.c_str(), section.c_str());
         settings.target = platform::readSetting(configFile, L"BuildTarget", fallback.target.c_str(), section.c_str());
         settings.compiler = static_cast<CompilerMode>(std::clamp(integer(configFile, L"Compiler",
@@ -194,6 +207,7 @@ void AppState::saveProject() {
     platform::writeSetting(configFile, L"Project", settings.cmakeFile, section.c_str());
     platform::writeSetting(configFile, L"BuildDirectory", settings.buildDirectory, section.c_str());
     platform::writeSetting(configFile, L"CMake", settings.cmakeExecutable, section.c_str());
+    writeEncoded(configFile, L"CMakeArguments", settings.cmakeArguments, section);
     platform::writeSetting(configFile, L"Configuration", settings.configuration, section.c_str());
     platform::writeSetting(configFile, L"BuildTarget", settings.target, section.c_str());
     platform::writeSetting(configFile, L"BuildTests", settings.buildTests ? L"1" : L"0", section.c_str());
@@ -209,6 +223,7 @@ void AppState::save() {
     platform::writeSetting(configFile, L"Project", settings.cmakeFile);
     platform::writeSetting(configFile, L"BuildDirectory", settings.buildDirectory);
     platform::writeSetting(configFile, L"CMake", settings.cmakeExecutable);
+    writeEncoded(configFile, L"CMakeArguments", settings.cmakeArguments, L"Panel");
     platform::writeSetting(configFile, L"Configuration", settings.configuration);
     platform::writeSetting(configFile, L"BuildTarget", settings.target);
     platform::writeSetting(configFile, L"BuildTests", settings.buildTests ? L"1" : L"0");

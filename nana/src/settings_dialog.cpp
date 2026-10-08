@@ -31,23 +31,26 @@ std::wstring environmentText(const RunSettings& settings) {
     return result;
 }
 struct RunDraft { std::wstring target, arguments, workingDirectory, environment; };
-constexpr int headerHeight = 43, footerHeight = 66, bodyHeight = 540;
+constexpr int headerHeight = 43, footerHeight = 66, bodyHeight = 579;
+constexpr auto smokeCmakeArguments = LR"(  -DDESIGNER_BUILD_TESTS=OFF "-DTEXT=Юникод и пробелы" -DEMPTY=  )";
 class SettingsText final : public nana::textbox {
 public:
     using nana::textbox::textbox;
     void scrollSpace(unsigned pixels) { get_drawer_trigger().editor()->scroll_space(pixels); }
+    void scrollCorner(const nana::color& color) { get_drawer_trigger().editor()->scroll_corner_color(color); }
     void borderScrollbars() { get_drawer_trigger().editor()->keep_scrollbars_at_border(); }
     void rootRenderers(const Palette&, const double&);
     void contentArea(nana::rectangle area, unsigned pitch) {
         auto* editor = get_drawer_trigger().editor();
-        editor->padding(0, 0, 0, 0);
         const auto dimensions = size();
         const nana::rectangle bounds{2, 2, dimensions.width - 4, dimensions.height - 4};
-        editor->editor_area(bounds);
-        editor->line_height(pitch);
         const unsigned left = static_cast<unsigned>(std::max(0, area.x - bounds.x));
         const unsigned right = static_cast<unsigned>(std::max(0, bounds.right() - area.right()));
+        // editor_area accepts the outer rectangle and accounts for padding.
+        // Do not remove and restore it: wrapped fields would reflow twice.
         editor->padding(0, right, 0, left);
+        editor->editor_area(bounds);
+        editor->line_height(pitch);
         const int naturalY = bounds.y + (multi_lines() ? 0 : std::max(0, (static_cast<int>(bounds.height) - static_cast<int>(pitch)) / 2));
         const int targetY = area.y + (multi_lines() ? 0 : std::max(0, (static_cast<int>(area.height) - static_cast<int>(pitch)) / 2));
         editor->text_y_offset(targetY - naturalY);
@@ -186,6 +189,7 @@ public:
           form_(owner.handle(), geometry(owner), nana::appearance(false, false, true, false, false, false, false)),
           title_(form_, L"Настройки CMakeBuild"), close_(form_), viewport_(form_), content_(viewport_.handle()), scrollbar_(form_.handle(), {}),
           cmakeLabel_(content_, L"CMake.exe"), cmake_(content_), cmakeBrowse_(content_, L"…"),
+          cmakeArgsLabel_(content_, L"Параметры CMake"), cmakeArguments_(content_),
           directoryLabel_(content_, L"Каталог сборки"), directory_(content_), directoryBrowse_(content_, L"…"),
           configLabel_(content_, L"Конфигурация"), configuration_(content_),
           compilerLabel_(content_, L"Компилятор"), compiler_(content_),
@@ -200,10 +204,11 @@ public:
         const auto bounds = geometry(owner);
         form_.size(bounds.dimension());
         directory_.caption(original_.buildDirectory); configuration_.caption(original_.configuration);
-        cmake_.caption(original_.cmakeExecutable); buildTarget_.caption(original_.target);
-        for (auto* field : {&directory_, &configuration_, &cmake_, &buildTarget_, &arguments_, &workingDirectory_}) field->multi_lines(false);
+        cmake_.caption(original_.cmakeExecutable); cmakeArguments_.caption(original_.cmakeArguments); buildTarget_.caption(original_.target);
+        for (auto* field : {&directory_, &configuration_, &cmake_, &cmakeArguments_, &buildTarget_, &arguments_, &workingDirectory_}) field->multi_lines(false);
         hint(directory_, "Пусто — build-cmakebuild рядом с проектом");
         hint(cmake_, "Пусто — найти CMake автоматически"); hint(buildTarget_, "Пусто — собрать все цели");
+        hint(cmakeArguments_, "Дополнительные параметры конфигурации, например -DDESIGNER_BUILD_TESTS=OFF; значения с пробелами заключайте в двойные кавычки");
         hint(configuration_, "Release, Debug, RelWithDebInfo или MinSizeRel");
         hint(arguments_, "Аргументы запуска; пути с пробелами заключайте в двойные кавычки");
         hint(workingDirectory_, "Пусто — папка EXE; относительный путь — от папки проекта");
@@ -261,14 +266,14 @@ public:
                 graph.rectangle(rect(point.x, point.y, 5, 5), true, palette_.accent);
         });
         for (const auto& [label, y] : std::initializer_list<std::pair<nana::label*, int>>{
-            {&title_, 9}, {&cmakeLabel_, 61}, {&directoryLabel_, 100}, {&configLabel_, 139}, {&compilerLabel_, 178},
-            {&buildTargetLabel_, 217}, {&runTargetLabel_, 256}, {&argsLabel_, 337}, {&workingLabel_, 376}, {&envLabel_, 415}}) {
+            {&title_, 9}, {&cmakeLabel_, 61}, {&cmakeArgsLabel_, 100}, {&directoryLabel_, 139}, {&configLabel_, 178}, {&compilerLabel_, 217},
+            {&buildTargetLabel_, 256}, {&runTargetLabel_, 295}, {&argsLabel_, 376}, {&workingLabel_, 415}, {&envLabel_, 454}}) {
             label->drawing([this, label, y](nana::paint::graphics& graph) {
                 graph.rectangle(true, palette_.surface); graph.typeface(label->typeface());
                 graph.string({0, textTop(graph, scale_, y, label == &title_ ? 28 : 26) - px(y)}, label->caption_wstring(), palette_.foreground);
             });
         }
-        for (auto* field : {&cmake_, &directory_, &configuration_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_}) {
+        for (auto* field : {&cmake_, &cmakeArguments_, &directory_, &configuration_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_}) {
             field->rootRenderers(palette_, scale_);
             field->enable_border_focused(false);
             field->drawing([this, field](nana::paint::graphics& graph) {
@@ -321,7 +326,7 @@ public:
             scrollbar_.value(a.upwards ? (current > step ? current - step : 0) : current + step);
         };
         viewport_.events().mouse_wheel(wheel); content_.events().mouse_wheel(wheel);
-        for (auto* w : std::initializer_list<nana::widget*>{&directory_, &configuration_, &cmake_, &compiler_, &buildTarget_, &tests_, &runTarget_, &arguments_, &workingDirectory_, &environment_, &directoryBrowse_, &cmakeBrowse_, &workingBrowse_}) {
+        for (auto* w : std::initializer_list<nana::widget*>{&directory_, &configuration_, &cmake_, &cmakeArguments_, &compiler_, &buildTarget_, &tests_, &runTarget_, &arguments_, &workingDirectory_, &environment_, &directoryBrowse_, &cmakeBrowse_, &workingBrowse_}) {
             w->events().focus([this, w](const nana::arg_focus& a) { if (a.getting) reveal(*w); });
             w->events().key_press([this, w](const nana::arg_keyboard& a) {
                 if (a.alt || a.ctrl || a.shift) return;
@@ -373,20 +378,24 @@ public:
     void show() { form_.show(); fitToWorkArea(); cmake_.focus(); form_.modality(); }
     nana::form& form() { return form_; }
     void applyTheme(Palette p) {
-        palette_ = std::move(p);
-        for (auto* w : std::initializer_list<nana::widget*>{&form_, &viewport_, &content_, &title_, &directoryLabel_, &configLabel_, &cmakeLabel_, &compilerLabel_, &buildTargetLabel_, &runTargetLabel_, &argsLabel_, &workingLabel_, &envLabel_, &tests_, &directoryBrowse_, &cmakeBrowse_, &workingBrowse_, &save_, &cancel_, &close_}) colorWidget(*w, palette_, true);
-        for (auto* w : std::initializer_list<nana::widget*>{&directory_, &configuration_, &cmake_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_, &compiler_, &runTarget_}) colorWidget(*w, palette_, true);
-        for (auto* field : {&directory_, &configuration_, &cmake_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_}) {
-            field->scheme().selection = palette_.accent;
-            field->scheme().selection_unfocused = field == &tools_ ? palette_.accent.blend(palette_.surface, .4) : palette_.surface;
-            field->scheme().selection_text = palette_.surface.r() > 128 ? nana::color{255,255,255} : nana::color{0,0,0};
-        }
-        tests_.scheme().square_border_color = palette_.border; tests_.scheme().square_bgcolor = palette_.surface;
-        save_.fgcolor(palette_.accentText);
-        for (auto* field : {&environment_, &tools_}) styleScrollbars(*field, palette_, scale_);
-        styleScrollbars(scrollbar_, palette_, scale_);
-        platform::setWindowTheme(form_.native_handle(), dark_);
-        nana::api::refresh_window_tree(form_);
+        nana::api::batch_updates(form_, [&] {
+            palette_ = std::move(p);
+            for (auto* w : std::initializer_list<nana::widget*>{&form_, &viewport_, &content_, &title_, &directoryLabel_, &configLabel_, &cmakeLabel_, &cmakeArgsLabel_, &compilerLabel_, &buildTargetLabel_, &runTargetLabel_, &argsLabel_, &workingLabel_, &envLabel_, &tests_, &directoryBrowse_, &cmakeBrowse_, &workingBrowse_, &save_, &cancel_, &close_}) colorWidget(*w, palette_, true);
+            for (auto* w : std::initializer_list<nana::widget*>{&directory_, &configuration_, &cmake_, &cmakeArguments_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_, &compiler_, &runTarget_}) colorWidget(*w, palette_, true);
+            for (auto* field : {&directory_, &configuration_, &cmake_, &cmakeArguments_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_}) {
+                field->scrollCorner(palette_.scrollTrack);
+                field->scheme().selection = palette_.accent;
+                field->scheme().selection_unfocused = field == &tools_ ? palette_.accent.blend(palette_.surface, .4) : palette_.surface;
+                field->scheme().selection_text = palette_.surface.r() > 128 ? nana::color{255,255,255} : nana::color{0,0,0};
+            }
+            tests_.scheme().square_border_color = palette_.border; tests_.scheme().square_bgcolor = palette_.surface;
+            save_.fgcolor(palette_.accentText);
+            for (auto* field : {&environment_, &tools_}) styleScrollbars(*field, palette_, scale_);
+            styleScrollbars(scrollbar_, palette_, scale_);
+            platform::setWindowTheme(form_.native_handle(), dark_);
+            nana::api::refresh_window_tree(form_);
+            nana::api::update_window(form_);
+        });
     }
     void popupSmoke(const std::wstring& directory) {
         smoking_ = true; themeTimer_.stop();
@@ -457,9 +466,14 @@ public:
     }
     int smoke(const std::wstring& directory, bool commit = false) {
         smoking_ = true; themeTimer_.stop();
+        if (cmakeArguments_.multi_lines() || cmakeArguments_.caption_wstring() != original_.cmakeArguments)
+            throw std::runtime_error("CMake argument field did not restore the saved single-line value");
+        cmakeArguments_.caption(smokeCmakeArguments);
         const auto snapshot = controller_.state().settings.configuration;
         configuration_.caption(L"   ");
-        if (save() || controller_.state().settings.configuration != snapshot) throw std::runtime_error("empty config accepted");
+        if (save() || controller_.state().settings.configuration != snapshot
+            || controller_.state().settings.cmakeArguments != original_.cmakeArguments)
+            throw std::runtime_error("invalid settings changed the saved build configuration");
         configuration_.caption(original_.configuration);
         if (targetNames_.size() > 1) {
             runTarget_.option(1); selectedTarget_ = targetNames_[1]; loadDraft();
@@ -482,7 +496,7 @@ public:
         const auto environment = environment_.caption_wstring();
         const auto focus = nana::api::focus_window();
         for (unsigned dpi : {120u, 192u, 144u, 96u, originalDpi}) {
-            platform::dispatchPreviewDpiChange(form_.native_handle(), dpi, {-31000, -32000, 505, 660});
+            platform::dispatchPreviewDpiChange(form_.native_handle(), dpi, {-31000, -32000, 505, 699});
             platform::drainPreviewMessages();
             const auto dimensions = fittedSize();
             const auto native = platform::clientArea(form_.native_handle());
@@ -490,6 +504,7 @@ public:
                 || native.height != static_cast<int>(dimensions.height))
                 throw std::runtime_error("settings DPI transition desynchronized native/Nana geometry");
             if (arguments_.caption_wstring() != input || environment_.caption_wstring() != environment
+                || cmakeArguments_.caption_wstring() != smokeCmakeArguments
                 || nana::api::focus_window() != focus)
                 throw std::runtime_error("settings DPI transition changed input/focus");
             int x{}, y{};
@@ -515,7 +530,7 @@ public:
             if (!platform::beginWindowDrag(form_.native_handle(), 0, originalAnchor, scale_))
                 throw std::runtime_error("settings title drag anchor could not be captured");
             for (unsigned dpi : {120u, 192u, 144u, 96u, originalDpi}) {
-                platform::dispatchPreviewDpiChange(form_.native_handle(), dpi, {-31000, -32000, 505, 660});
+                platform::dispatchPreviewDpiChange(form_.native_handle(), dpi, {-31000, -32000, 505, 699});
                 const auto dimensions = platform::clientArea(form_.native_handle());
                 const auto anchoredBounds = platform::windowDragDpiBounds(originalAnchor, dimensions, dpi / 96.0);
                 int x{}, y{};
@@ -545,6 +560,7 @@ public:
             title_.events().mouse_move.emit(dragMouse, title_.handle());
             platform::captureNativePosition(form_.native_handle(), afterX, afterY);
             if (beforeX != afterX || beforeY != afterY || arguments_.caption_wstring() != input
+                || cmakeArguments_.caption_wstring() != smokeCmakeArguments
                 || environment_.caption_wstring() != environment)
                 throw std::runtime_error("settings moved or changed input after ending a title drag");
         }
@@ -553,7 +569,8 @@ public:
             const auto editedArguments = arguments_.caption_wstring();
             const auto editedEnvironment = environment_.caption_wstring();
             dark_ = dark; applyTheme(Palette::system(dark));
-            if (arguments_.caption_wstring() != editedArguments || environment_.caption_wstring() != editedEnvironment)
+            if (arguments_.caption_wstring() != editedArguments || environment_.caption_wstring() != editedEnvironment
+                || cmakeArguments_.caption_wstring() != smokeCmakeArguments)
                 throw std::runtime_error("theme changed settings input");
             const auto imagePath = std::filesystem::path(directory) / (dark ? L"settings-dark.bmp" : L"settings-light.bmp");
             const auto hash = savePreview(form_, imagePath.wstring());
@@ -589,6 +606,7 @@ private:
     nana::panel<true> viewport_, content_;
     nana::scroll<true> scrollbar_;
     nana::label cmakeLabel_; SettingsText cmake_; nana::button cmakeBrowse_;
+    nana::label cmakeArgsLabel_; SettingsText cmakeArguments_;
     nana::label directoryLabel_; SettingsText directory_; nana::button directoryBrowse_;
     nana::label configLabel_; SettingsText configuration_;
     nana::label compilerLabel_; SettingsChoice compiler_;
@@ -619,7 +637,7 @@ private:
         const auto scale = platform::windowScale(owner.native_handle());
         const auto px = [scale](int value) { return static_cast<int>(value * scale); };
         const int width = std::min(px(505), std::max(px(300), work.width - px(16)));
-        const int height = std::min(px(660), std::max(px(180), work.height - px(16)));
+        const int height = std::min(px(699), std::max(px(180), work.height - px(16)));
         int ownerX{}, ownerY{}; platform::captureNativePosition(owner.native_handle(), ownerX, ownerY);
         const auto ownerSize = platform::clientArea(owner.native_handle());
         const int x = std::clamp(ownerX + (ownerSize.width - width) / 2, work.x, std::max(work.x, work.x + work.width - width));
@@ -635,14 +653,14 @@ private:
         if (&button == &save_) return {width - 238, height - 48, 115, 30};
         if (&button == &cancel_) return {width - 113, height - 48, 95, 30};
         if (&button == &close_) return {width - 40, 9, 27, 27};
-        return {width - 48, (&button == &cmakeBrowse_ ? 18 : &button == &directoryBrowse_ ? 57 : 333) + headerHeight, 30, 26};
+        return {width - 48, (&button == &cmakeBrowse_ ? 18 : &button == &directoryBrowse_ ? 96 : 372) + headerHeight, 30, 26};
     }
     nana::rectangle inputLogical(const SettingsText& field) const {
         const int width = static_cast<int>(std::lround(form_.size().width / scale_));
-        if (&field == &tools_) return {18, 464 + headerHeight, static_cast<unsigned>(width - 36), 76};
+        if (&field == &tools_) return {18, 503 + headerHeight, static_cast<unsigned>(width - 36), 76};
         const int x = width < 420 ? 130 : 158;
-        const int y = &field == &cmake_ ? 18 : &field == &directory_ ? 57 : &field == &configuration_ ? 96
-            : &field == &buildTarget_ ? 174 : &field == &arguments_ ? 294 : &field == &workingDirectory_ ? 333 : 372;
+        const int y = &field == &cmake_ ? 18 : &field == &cmakeArguments_ ? 57 : &field == &directory_ ? 96 : &field == &configuration_ ? 135
+            : &field == &buildTarget_ ? 213 : &field == &arguments_ ? 333 : &field == &workingDirectory_ ? 372 : 411;
         return {x, y + headerHeight, static_cast<unsigned>(width - x - 18 - ((&field == &cmake_ || &field == &directory_ || &field == &workingDirectory_) ? 37 : 0)),
             &field == &environment_ ? 78u : 26u};
     }
@@ -650,7 +668,7 @@ private:
         nana::paint::graphics metricsGraph{nana::size{1, 1}}; metricsGraph.typeface(font);
         const auto metrics = textMetrics(metricsGraph, scale_);
         const auto pitch = static_cast<unsigned>(std::max(1, px(metrics.logicalHeight)));
-        for (auto* field : {&cmake_, &directory_, &configuration_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_}) {
+        for (auto* field : {&cmake_, &cmakeArguments_, &directory_, &configuration_, &buildTarget_, &arguments_, &workingDirectory_, &environment_, &tools_}) {
             const auto logical = inputLogical(*field);
             const bool tools = field == &tools_, multiLine = tools || field == &environment_;
             const int left = px(logical.x + (tools ? 4 : 2)) - px(logical.x);
@@ -664,10 +682,10 @@ private:
         }
     }
     nana::size fittedSize() const {
-        if (previewScale_ > 0) return {static_cast<unsigned>(505 * previewScale_), static_cast<unsigned>(660 * previewScale_)};
+        if (previewScale_ > 0) return {static_cast<unsigned>(505 * previewScale_), static_cast<unsigned>(699 * previewScale_)};
         const auto work = platform::monitorWorkArea(form_.native_handle());
         return {static_cast<unsigned>(std::min(px(505), std::max(px(300), work.width - px(16)))),
-            static_cast<unsigned>(std::min(px(660), std::max(px(180), work.height - px(16))))};
+            static_cast<unsigned>(std::min(px(699), std::max(px(180), work.height - px(16))))};
     }
     void fitToWorkArea() {
         if (fitting_) return;
@@ -699,19 +717,19 @@ private:
         scrollbar_.amount(static_cast<std::size_t>(contentHeight)); scrollbar_.range(viewport_.size().height); scrollbar_.step(px(28));
         if (scrollable) scrollbar_.show(); else scrollbar_.hide();
         if (!scrollable) { scrollbar_.value(0); content_.move(0, 0); }
-        const std::pair<nana::label*, int> labels[] = {{&cmakeLabel_, 18}, {&directoryLabel_, 57}, {&configLabel_, 96}, {&compilerLabel_, 135}, {&buildTargetLabel_, 174}, {&runTargetLabel_, 213}, {&argsLabel_, 294}, {&workingLabel_, 333}, {&envLabel_, 372}};
+        const std::pair<nana::label*, int> labels[] = {{&cmakeLabel_, 18}, {&cmakeArgsLabel_, 57}, {&directoryLabel_, 96}, {&configLabel_, 135}, {&compilerLabel_, 174}, {&buildTargetLabel_, 213}, {&runTargetLabel_, 252}, {&argsLabel_, 333}, {&workingLabel_, 372}, {&envLabel_, 411}};
         for (const auto& [label, y] : labels) { box(*label, 21, y, inputX - 23, 26); label->text_align(nana::align::left, nana::align_v::center); }
-        const std::pair<SettingsText*, int> fields[] = {{&cmake_, 18}, {&directory_, 57}, {&configuration_, 96}, {&buildTarget_, 174}, {&arguments_, 294}, {&workingDirectory_, 333}};
+        const std::pair<SettingsText*, int> fields[] = {{&cmake_, 18}, {&cmakeArguments_, 57}, {&directory_, 96}, {&configuration_, 135}, {&buildTarget_, 213}, {&arguments_, 333}, {&workingDirectory_, 372}};
         for (const auto& [field, y] : fields) box(*field, inputX, y, fieldWidth - ((field == &directory_ || field == &cmake_ || field == &workingDirectory_) ? 37 : 0), 26);
-        box(compiler_, inputX, 135, fieldWidth, 26); box(runTarget_, inputX, 213, fieldWidth, 26);
-        box(tests_, inputX, 252, fieldWidth, 26);
-        box(environment_, inputX, 372, fieldWidth, 78); box(tools_, 18, 464, logicalWidth - 36, 76);
-        for (const auto& [button, y] : std::initializer_list<std::pair<nana::button*, int>>{{&cmakeBrowse_, 18}, {&directoryBrowse_, 57}, {&workingBrowse_, 333}})
+        box(compiler_, inputX, 174, fieldWidth, 26); box(runTarget_, inputX, 252, fieldWidth, 26);
+        box(tests_, inputX, 291, fieldWidth, 26);
+        box(environment_, inputX, 411, fieldWidth, 78); box(tools_, 18, 503, logicalWidth - 36, 76);
+        for (const auto& [button, y] : std::initializer_list<std::pair<nana::button*, int>>{{&cmakeBrowse_, 18}, {&directoryBrowse_, 96}, {&workingBrowse_, 372}})
             box(*button, logicalWidth - 48, y, 30, 26);
         save_.move(rect(logicalWidth - 238, logicalHeight - 48, 115, 30));
         cancel_.move(rect(logicalWidth - 113, logicalHeight - 48, 95, 30));
         const nana::paint::font font{"Segoe UI", 9.75, {}, static_cast<std::size_t>(std::lround(scale_ * 96))};
-        for (auto* w : std::initializer_list<nana::widget*>{&title_, &directoryLabel_, &configLabel_, &cmakeLabel_, &compilerLabel_, &buildTargetLabel_, &runTargetLabel_, &argsLabel_, &workingLabel_, &envLabel_, &directory_, &configuration_, &cmake_, &compiler_, &buildTarget_, &tests_, &runTarget_, &arguments_, &workingDirectory_, &environment_, &tools_, &directoryBrowse_, &cmakeBrowse_, &workingBrowse_, &save_, &cancel_, &close_}) w->typeface(font);
+        for (auto* w : std::initializer_list<nana::widget*>{&title_, &directoryLabel_, &configLabel_, &cmakeLabel_, &cmakeArgsLabel_, &compilerLabel_, &buildTargetLabel_, &runTargetLabel_, &argsLabel_, &workingLabel_, &envLabel_, &directory_, &configuration_, &cmake_, &cmakeArguments_, &compiler_, &buildTarget_, &tests_, &runTarget_, &arguments_, &workingDirectory_, &environment_, &tools_, &directoryBrowse_, &cmakeBrowse_, &workingBrowse_, &save_, &cancel_, &close_}) w->typeface(font);
         configureTextAreas(font);
         for (auto* field : {&environment_, &tools_}) { field->scrollSpace(px(16)); styleScrollbars(*field, palette_, scale_); }
         styleScrollbars(scrollbar_, palette_, scale_);
@@ -723,7 +741,7 @@ private:
         else {
             const int width = static_cast<int>(std::lround(form_.size().width / scale_));
             const int x = width < 420 ? 130 : 158;
-            logical = {x, (&widget == &compiler_ ? 135 : &widget == &runTarget_ ? 213 : 252) + headerHeight, static_cast<unsigned>(width - x - 18), 26};
+            logical = {x, (&widget == &compiler_ ? 174 : &widget == &runTarget_ ? 252 : 291) + headerHeight, static_cast<unsigned>(width - x - 18), 26};
         }
         platform::paintFocusRectangle(graph.context(), logical.x + 4, logical.y + 4,
             static_cast<int>(logical.width) - 8, static_cast<int>(logical.height) - 8, color.px_color().value & 0xffffff,
@@ -734,7 +752,7 @@ private:
         const auto foreground = choice.enabled() ? palette_.foreground : palette_.muted;
         const auto caption = ellipsized(graph, choice.caption_wstring(), graph.width() > static_cast<unsigned>(px(36)) ? graph.width() - px(36) : 0);
         const int dialogWidth = static_cast<int>(std::lround(form_.size().width / scale_));
-        const int x = dialogWidth < 420 ? 130 : 158, y = (&choice == &compiler_ ? 135 : 213) + headerHeight;
+        const int x = dialogWidth < 420 ? 130 : 158, y = (&choice == &compiler_ ? 174 : 252) + headerHeight;
         const int width = dialogWidth - x - 18;
         const auto point = [this, x, y](int localX, int localY) { return nana::point{px(x + localX) - px(x), px(y + localY) - px(y)}; };
         graph.string({point(7, 0).x, textTop(graph, scale_, y, 26) - px(y)}, caption, foreground);
@@ -747,7 +765,7 @@ private:
         graph.typeface(tests_.typeface()); graph.rectangle(true, palette_.surface);
         const bool enabled = tests_.enabled(), checked = tests_.checked();
         const int dialogWidth = static_cast<int>(std::lround(form_.size().width / scale_));
-        const int widgetX = dialogWidth < 420 ? 130 : 158, widgetY = 252 + headerHeight;
+        const int widgetX = dialogWidth < 420 ? 130 : 158, widgetY = 291 + headerHeight;
         const int boxX = widgetX + 2, boxY = widgetY + 5;
         const auto foreground = enabled ? palette_.foreground : palette_.muted;
         const auto fill = enabled && checked ? palette_.accent : palette_.surface;
@@ -796,6 +814,9 @@ private:
         settings.configuration = trim(configuration_.caption_wstring());
         if (settings.configuration.empty()) return invalid(L"Укажите конфигурацию сборки.", configuration_);
         settings.buildDirectory = directory_.caption_wstring(); settings.cmakeExecutable = cmake_.caption_wstring();
+        settings.cmakeArguments = cmakeArguments_.caption_wstring();
+        if (settings.cmakeArguments.find_first_of(L"\r\n\0", 0, 3) != std::wstring::npos)
+            return invalid(L"Параметры CMake должны занимать одну строку.", cmakeArguments_);
         settings.target = trim(buildTarget_.caption_wstring()); settings.compiler = static_cast<CompilerMode>(compiler_.option()); settings.buildTests = tests_.checked();
         storeDraft(); std::vector<std::pair<std::wstring, RunSettings>> runs;
         for (const auto& draft : drafts_) {
@@ -856,6 +877,7 @@ int runSettingsSmoke(nana::form& owner, Controller& controller, const Palette& p
         return std::string{std::istreambuf_iterator<char>{file}, {}};
     };
     const auto before = readIni();
+    const auto originalCmakeArguments = controller.state().settings.cmakeArguments;
     {
         SettingsDialog dialog{owner, controller, palette}; dialog.popupSmoke(directory.wstring());
     }
@@ -864,7 +886,8 @@ int runSettingsSmoke(nana::form& owner, Controller& controller, const Palette& p
         SettingsDialog dialog{owner, controller, palette};
         dialog.smoke(directory.wstring()); dialog.form().close();
     }
-    if (readIni() != before) throw std::runtime_error("cancelled settings changed INI");
+    if (readIni() != before || controller.state().settings.cmakeArguments != originalCmakeArguments)
+        throw std::runtime_error("cancelled settings changed CMake arguments or INI");
     {
         SettingsDialog dialog{owner, controller, palette}; dialog.smoke(directory.wstring(), true);
     }
@@ -873,6 +896,10 @@ int runSettingsSmoke(nana::form& owner, Controller& controller, const Palette& p
         throw std::runtime_error("launch settings did not save from Nana controls");
     if (controller.state().runSettingsFor(L"beta").arguments != L"--beta")
         throw std::runtime_error("second target draft was not saved");
+    AppState restarted{controller.state().configFile}; restarted.load();
+    if (controller.state().settings.cmakeArguments != smokeCmakeArguments
+        || restarted.settings.cmakeArguments != smokeCmakeArguments)
+        throw std::runtime_error("CMake arguments did not save exactly from Nana controls");
     return 0;
 }
 }

@@ -79,6 +79,52 @@ void checkBuildMode(const fs::path& ini) {
     }
 }
 
+void checkCmakeArguments(const fs::path& ini) {
+    const std::wstring arguments = LR"(  -DDESIGNER_BUILD_TESTS=OFF "-DTEXT=Юникод и пробелы" -DEMPTY=  )";
+    const auto first = (ini.parent_path() / L"first/CMakeLists.txt").wstring();
+    const auto second = (ini.parent_path() / L"second/CMakeLists.txt").wstring();
+    const auto firstSection = cb::platform::projectSection(first);
+    cb::AppState state{ini.wstring()}; state.load();
+    require(state.settings.cmakeArguments.empty(), L"Old INI must default to empty CMake arguments");
+    state.settings.cmakeArguments = arguments; state.save();
+    require(cb::platform::readSetting(ini.wstring(), L"CMakeArgumentsChunks") == L"1",
+        L"CMake arguments must use the shared lossless INI representation");
+    cb::platform::writeSetting(ini.wstring(), L"Project", first);
+    cb::platform::writeSetting(ini.wstring(), L"Project", first, firstSection.c_str());
+    state.load();
+    require(state.settings.cmakeArguments == arguments,
+        L"Missing project CMake arguments must retain exact Panel fallback, including trailing spaces");
+    state.save();
+    cb::platform::writeSetting(ini.wstring(), L"CMakeArgumentsChunks", L"0", firstSection.c_str());
+    state.load();
+    require(state.settings.cmakeArguments.empty(), L"Explicit empty project arguments must override nonempty Panel fallback");
+    state.settings.cmakeArguments = arguments; state.save();
+    state.selectProject(second);
+    require(state.settings.cmakeArguments.empty(), L"A new project must not inherit CMake arguments");
+    const std::wstring longArguments = L"-DLONG=" + std::wstring(4500, L'Ж') + LR"( "-DPATH=C:\Папка с пробелами\\")";
+    state.settings.cmakeArguments = longArguments; state.save();
+    cb::AppState restarted{ini.wstring()}; restarted.load();
+    require(restarted.settings.cmakeArguments == longArguments,
+        L"Chunked CMake arguments must survive restart with Unicode, quotes and backslashes");
+    restarted.selectProject(first);
+    require(restarted.settings.cmakeArguments == arguments,
+        L"Project switching must restore its exact CMake arguments");
+    restarted.settings.cmakeArguments.clear(); restarted.save();
+    cb::platform::writeSetting(ini.wstring(), L"CMakeArgumentsChunks", L"0", firstSection.c_str());
+    cb::platform::writeSetting(ini.wstring(), L"CMakeArguments", L"-DSHOULD_NOT_APPLY=ON", firstSection.c_str());
+    restarted.selectProject(second);
+    require(restarted.settings.cmakeArguments == longArguments, L"Second project's parameters must remain independent");
+    restarted.selectProject(first);
+    require(restarted.settings.cmakeArguments.empty(), L"Explicit empty parameters must override legacy plain and Panel values");
+    const std::wstring plainArguments = L"-DLEGACY=ON -DTEXT=Юникод";
+    cb::platform::writeSetting(ini.wstring(), L"CMakeArgumentsChunks", L"", firstSection.c_str());
+    cb::platform::writeSetting(ini.wstring(), L"CMakeArguments", plainArguments, firstSection.c_str());
+    restarted.load();
+    require(restarted.settings.cmakeArguments == plainArguments, L"A plain CMakeArguments INI value must also load");
+    restarted.settings.cmakeArguments.clear(); restarted.save(); restarted.load();
+    require(restarted.settings.cmakeArguments.empty(), L"Clearing CMake arguments must survive restart");
+}
+
 void checkProjects(const fs::path& ini, const ProjectFixture& first, const ProjectFixture& second) {
     seed(ini, first);
     seed(ini, second);
@@ -413,6 +459,7 @@ int wmain() {
         if (executable.filename().wstring().starts_with(L"run-fixture-")) return runFixture(executable);
         harness::TempDirectory temporary;
         checkBuildMode(temporary.root / L"build-mode/settings.ini");
+        checkCmakeArguments(temporary.root / L"cmake-arguments/settings.ini");
         const harness::ProjectFixture first(temporary.root, L"проект [one] 100%", L"custom-build", L"Release",
             L"Alpha", L"Beta & tool", L"run-fixture-alpha.exe", L"run-fixture-beta.exe");
         const harness::ProjectFixture second(temporary.root, L"проект two", L"debug-output", L"Debug",

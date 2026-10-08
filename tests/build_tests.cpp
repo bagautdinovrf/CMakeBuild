@@ -144,6 +144,25 @@ public:
         std::lock_guard lock(mutex_);
         return std::ranges::any_of(events_, [&](const auto& event) { return commandArgument(event, argument); });
     }
+    void checkConfigureOnlyArgument(std::wstring_view argument, bool expected) {
+        std::lock_guard lock(mutex_);
+        size_t occurrences = 0;
+        for (const auto& event : events_) {
+            if (!commandArgument(event, argument)) continue;
+            ++occurrences;
+            require(commandArgument(event, L"-S") && commandArgument(event, L"-B")
+                && !commandArgument(event, L"--build"),
+                "Additional CMake arguments escaped the configure invocation.");
+        }
+        require(occurrences == (expected ? 1u : 0u),
+            "Additional CMake argument was omitted, duplicated, or reused without configuration.");
+    }
+    bool invokedCommand() {
+        std::lock_guard lock(mutex_);
+        return std::ranges::any_of(events_, [](const auto& event) {
+            return event.kind == cb::EventKind::Log && event.text.starts_with(L"> ");
+        });
+    }
     void checkNoProgressForLog(std::wstring_view text) {
         std::lock_guard lock(mutex_);
         bool found = false;
@@ -476,6 +495,245 @@ void checkStandaloneConfiguration(const fs::path& root, const Options& options) 
     std::cout << "[ PASS ] configuration_and_test_options_invalidate_reused_tree" << std::endl;
 }
 
+Fixture customArgumentsProject(const fs::path& root, std::wstring_view name) {
+    const Fixture fixture{root / name / L"source", root / name / L"build"};
+    write(fixture.source / L"CMakeLists.txt", R"cmake(cmake_minimum_required(VERSION 3.24)
+project(EngineCustomArgumentsFixture LANGUAGES CXX)
+file(APPEND "${CMAKE_SOURCE_DIR}/configure-invocations.txt" "configured;")
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+option(DESIGNER_BUILD_TESTS "Build project-specific designer tests" ON)
+set(CUSTOM_TEXT "default text" CACHE STRING "Additional configure argument")
+file(WRITE "${CMAKE_BINARY_DIR}/custom-text.txt" "${CUSTOM_TEXT}")
+add_executable(engine_fixture main.cpp)
+if(DESIGNER_BUILD_TESTS)
+    add_executable(designer_test_fixture designer_test.cpp)
+endif()
+)cmake");
+    write(fixture.source / L"main.cpp", "int main() { return 0; }\n");
+    write(fixture.source / L"designer_test.cpp", "#error CMAKEBUILD_DESIGNER_TEST_COMPILE_FAILURE\n");
+    return fixture;
+}
+
+cb::BuildSettings customArgumentsSettings(const Fixture& fixture, const Options& options,
+        std::wstring_view arguments) {
+    cb::BuildSettings settings;
+    settings.cmakeFile = (fixture.source / L"CMakeLists.txt").wstring();
+    settings.buildDirectory = fixture.build.wstring();
+    settings.cmakeExecutable = options.cmake.wstring();
+    settings.compiler = options.compiler;
+    settings.cmakeArguments = arguments;
+    return settings;
+}
+
+cb::Event buildArguments(const Fixture& fixture, const Options& options,
+        std::wstring_view arguments, bool expectedConfigure, bool brokenTests = false,
+        bool configureOnly = false) {
+    Events events;
+    cb::Engine engine([&](cb::Event event) { events.receive(std::move(event)); });
+    auto settings = customArgumentsSettings(fixture, options, arguments);
+    const auto started = std::chrono::steady_clock::now();
+    require(configureOnly ? engine.configure(std::move(settings)) : engine.build(std::move(settings)),
+        "Engine rejected the custom CMake argument fixture.");
+    const auto result = events.wait(engine);
+    events.checkBuildDuration(std::chrono::steady_clock::now() - started);
+    require(events.explicitlyConfigured() == expectedConfigure,
+        "Custom CMake arguments did not follow the expected configuration reuse policy.");
+    const auto expected = configureOnly ? cb::EventKind::ConfigureSucceeded
+        : brokenTests ? cb::EventKind::BuildFailed : cb::EventKind::BuildSucceeded;
+    if (result.kind != expected) events.dump();
+    require(result.kind == expected, "Custom CMake argument fixture returned an unexpected result.");
+    if (brokenTests) {
+        require(events.contains(L"CMAKEBUILD_DESIGNER_TEST_COMPILE_FAILURE"),
+            "Custom test-option control failed before compiling the deliberately broken test.");
+    }
+    events.checkConfigureOnlyArgument(L"-DDESIGNER_BUILD_TESTS=OFF",
+        expectedConfigure && arguments.find(L"-DDESIGNER_BUILD_TESTS=OFF") != arguments.npos);
+    if (configureOnly) {
+        require(!events.invokedArgument(L"--build") && events.progressValues().empty(),
+            "Additional CMake arguments caused configure-only to build a target.");
+    }
+    return result;
+}
+
+void checkCustomCMakeArguments(const fs::path& root, const Options& options) {
+    const auto fixture = customArgumentsProject(root, L"custom CMake параметры");
+    const auto count = [&] { return read(fixture.source / L"configure-invocations.txt"); };
+    constexpr std::wstring_view disableTests = L"-DDESIGNER_BUILD_TESTS=OFF";
+
+    std::cout << "[ RUN ] custom_test_option_overrides_project_default" << std::endl;
+    buildArguments(fixture, options, {}, true, true);
+    const auto controlCache = readCache(fixture.build);
+    require(controlCache.at("BUILD_TESTING") == "OFF" && controlCache.at("BUILD_TESTS") == "OFF"
+        && controlCache.at("DESIGNER_BUILD_TESTS") == "ON",
+        "Control fixture did not reproduce the independent project-specific test option.");
+    const auto result = buildArguments(fixture, options, disableTests, true);
+    require(result.targets.size() == 1 && result.targets.front().name == L"engine_fixture"
+        && fs::is_regular_file(result.targets.front().executable)
+        && readCache(fixture.build).at("DESIGNER_BUILD_TESTS") == "OFF",
+        "The explicit project-specific argument did not exclude the broken test target.");
+    std::cout << "[ PASS ] custom_test_option_overrides_project_default" << std::endl;
+
+    std::cout << "[ RUN ] custom_arguments_preserve_quoted_unicode_values" << std::endl;
+    const std::wstring text = L"Значение с пробелами & %PATH% ; данные";
+    const auto arguments = std::wstring(disableTests) + L" -DCUSTOM_TEXT:STRING=\"" + text + L"\""
+        LR"( -DLITERAL_QUOTE:STRING="value \"quoted\"" -DTRAILING_PATH:STRING="C:\Пример\\")";
+    const auto beforeArguments = count();
+    buildArguments(fixture, options, arguments, true);
+    require(count() == beforeArguments + "configured;"
+        && readCache(fixture.build).at("CUSTOM_TEXT") == utf8(text)
+        && read(fixture.build / L"custom-text.txt") == utf8(text)
+        && readCache(fixture.build).at("LITERAL_QUOTE") == "value \"quoted\""
+        && readCache(fixture.build).at("TRAILING_PATH") == utf8(L"C:\\Пример\\"),
+        "Quoted spaces, Unicode, or shell metacharacters changed in the CMake argument value.");
+    std::cout << "[ PASS ] custom_arguments_preserve_quoted_unicode_values" << std::endl;
+
+    std::cout << "[ RUN ] custom_arguments_reuse_change_and_clear_across_engine_restart" << std::endl;
+    const auto beforeReuse = count();
+    buildArguments(fixture, options, arguments, false);
+    require(count() == beforeReuse, "Identical custom arguments reconfigured after an Engine restart.");
+    const std::wstring changedText = L"Изменённое значение проекта";
+    const auto changed = std::wstring(disableTests) + L" -DCUSTOM_TEXT:STRING=\"" + changedText + L"\"";
+    buildArguments(fixture, options, changed, true);
+    require(count() == beforeReuse + "configured;"
+        && readCache(fixture.build).at("CUSTOM_TEXT") == utf8(changedText),
+        "Changed custom arguments did not reconfigure and update the existing cache.");
+    const auto beforeClear = count();
+    buildArguments(fixture, options, {}, true);
+    // Removing CLI definitions reruns configuration; CMake retains existing cache
+    // values until explicitly changed or unset, including the disabled tests.
+    require(count() == beforeClear + "configured;"
+        && readCache(fixture.build).at("DESIGNER_BUILD_TESTS") == "OFF",
+        "Clearing custom arguments did not reconfigure the existing build tree.");
+    const auto afterClear = count();
+    buildArguments(fixture, options, {}, false);
+    require(count() == afterClear, "Cleared custom arguments did not restore configuration reuse.");
+    std::cout << "[ PASS ] custom_arguments_reuse_change_and_clear_across_engine_restart" << std::endl;
+
+    std::cout << "[ RUN ] custom_cache_overrides_and_unsets_reuse_successful_configuration" << std::endl;
+    const auto overrides = std::wstring(disableTests)
+        + L" -D BUILD_TESTING:BOOL=ON -DBUILD_TESTS:BOOL=ON -U CUSTOM_TEXT";
+    const auto beforeOverrides = count();
+    buildArguments(fixture, options, overrides, true);
+    const auto overridden = readCache(fixture.build);
+    require(count() == beforeOverrides + "configured;" && overridden.at("BUILD_TESTING") == "ON"
+        && overridden.at("BUILD_TESTS") == "ON" && overridden.at("CUSTOM_TEXT") == "default text",
+        "Explicit cache definitions did not override the test checkbox or the cache unset was ignored.");
+    const auto beforeOverrideReuse = count();
+    buildArguments(fixture, options, overrides, false);
+    require(count() == beforeOverrideReuse,
+        "Explicit test-option overrides caused repeated configuration despite unchanged arguments.");
+    buildArguments(fixture, options, disableTests, true);
+    require(readCache(fixture.build).at("BUILD_TESTING") == "OFF"
+        && readCache(fixture.build).at("BUILD_TESTS") == "OFF",
+        "Removing explicit test-option overrides did not restore the checkbox defaults.");
+    std::cout << "[ PASS ] custom_cache_overrides_and_unsets_reuse_successful_configuration" << std::endl;
+
+    std::cout << "[ RUN ] configuration_field_wins_over_custom_build_type_and_unset" << std::endl;
+    for (const auto* buildTypeArgument : {L" -DCMAKE_BUILD_TYPE=Debug", L" -U CMAKE_BUILD_TYPE"}) {
+        const auto buildTypeArguments = std::wstring(disableTests) + buildTypeArgument;
+        const auto beforeBuildType = count();
+        buildArguments(fixture, options, buildTypeArguments, true);
+        require(count() == beforeBuildType + "configured;"
+            && readCache(fixture.build).at("CMAKE_BUILD_TYPE") == "Release",
+            "Custom build-type definition or unset replaced the panel configuration field.");
+        const auto beforeBuildTypeReuse = count();
+        buildArguments(fixture, options, buildTypeArguments, false);
+        require(count() == beforeBuildTypeReuse && readCache(fixture.build).at("CMAKE_BUILD_TYPE") == "Release",
+            "Reasserting the panel build type prevented reuse of unchanged custom arguments.");
+    }
+    std::cout << "[ PASS ] configuration_field_wins_over_custom_build_type_and_unset" << std::endl;
+
+    std::cout << "[ RUN ] standalone_configure_accepts_custom_arguments_without_building" << std::endl;
+    const auto standalone = customArgumentsProject(root, L"standalone custom CMake");
+    const auto preload = standalone.source / L"начальные параметры.cmake";
+    write(preload, "set(CUSTOM_PRELOADED \"cache script value\" CACHE STRING \"Preloaded fixture\")\n");
+    const auto installPrefix = (standalone.build / L"install prefix").generic_wstring();
+    const auto standaloneArguments = arguments + L" -C \"" + preload.wstring()
+        + L"\" --no-warn-unused-cli --install-prefix \"" + installPrefix + L"\"";
+    const auto configured = buildArguments(standalone, options, standaloneArguments, true, false, true);
+    require(configured.targets.size() == 1 && !fs::exists(configured.targets.front().executable)
+        && read(standalone.build / L"custom-text.txt") == utf8(text)
+        && readCache(standalone.build).at("CUSTOM_PRELOADED") == "cache script value"
+        && readCache(standalone.build).at("CMAKE_INSTALL_PREFIX") == utf8(installPrefix),
+        "Standalone configure did not apply the custom argument without compiling the executable.");
+    const auto beforeBuild = read(standalone.source / L"configure-invocations.txt");
+    buildArguments(standalone, options, standaloneArguments, false);
+    require(read(standalone.source / L"configure-invocations.txt") == beforeBuild,
+        "Build could not reuse custom arguments recorded by standalone configure.");
+    std::cout << "[ PASS ] standalone_configure_accepts_custom_arguments_without_building" << std::endl;
+}
+
+void checkRejectedCMakeArguments(const fs::path& root, const Options& options) {
+    std::cout << "[ RUN ] custom_arguments_reject_cmake_mode_and_directory_overrides" << std::endl;
+    const auto fixture = customArgumentsProject(root, L"rejected custom CMake arguments");
+    const auto redirected = root / L"unexpected redirected build";
+    const auto script = fixture.source / L"unexpected-script.cmake";
+    const auto scriptMarker = root / L"unexpected-script-ran.txt";
+    write(script, "file(WRITE \"" + utf8(scriptMarker.generic_wstring()) + "\" \"unexpected\")\n");
+    std::vector<std::wstring> rejected{
+        L"-S \"" + fixture.source.wstring() + L"\"",
+        L"-S\"" + fixture.source.wstring() + L"\"",
+        L"-B \"" + redirected.wstring() + L"\"",
+        L"-B\"" + redirected.wstring() + L"\"",
+        L"--build \"" + redirected.wstring() + L"\"",
+        L"--install \"" + redirected.wstring() + L"\"",
+        L"-P \"" + script.wstring() + L"\"",
+        L"-P\"" + script.wstring() + L"\"",
+        L"-E touch \"" + scriptMarker.wstring() + L"\"",
+        L"--workflow --preset fixture",
+        L"--preset fixture",
+        L"-G Ninja",
+        L"-A x64",
+        L"-T host=x64",
+        L"--open \"" + redirected.wstring() + L"\"",
+        L"--find-package",
+        L"--help",
+        L"--version",
+        L"\"" + fixture.source.wstring() + L"\"",
+        L"--system-information",
+        L"-help",
+        L"-usage",
+        L"/?",
+        L"/V",
+        L"-D --help",
+        L"--trace-source --help",
+        L"--log-level --system-information",
+        L"-C -N",
+        L"-U -P",
+        L"-D",
+        L"-U",
+        L"-C",
+        L"-DCUSTOM_TEXT=\"unclosed",
+        L"-DCUSTOM_TEXT=line\nsecond line",
+        std::wstring(32767, L'x'),
+    };
+    for (const auto* reserved : {L"CMAKE_GENERATOR", L"CMAKE_GENERATOR_PLATFORM", L"CMAKE_GENERATOR_TOOLSET",
+            L"CMAKE_HOME_DIRECTORY", L"CMAKE_CACHEFILE_DIR", L"CMAKE_COMMAND", L"CMAKE_C_COMPILER",
+            L"CMAKE_CXX_COMPILER", L"CMAKE_MAKE_PROGRAM"}) {
+        rejected.push_back(std::wstring(L"-D") + reserved + L"=unexpected");
+        rejected.push_back(std::wstring(L"-D ") + reserved + L"=unexpected");
+        rejected.push_back(std::wstring(L"-D") + reserved + L":STRING=unexpected");
+        rejected.push_back(std::wstring(L"-D ") + reserved + L":STRING=unexpected");
+    }
+    for (const auto& arguments : rejected) {
+        Events events;
+        cb::Engine engine([&](cb::Event event) { events.receive(std::move(event)); });
+        require(engine.build(customArgumentsSettings(fixture, options, arguments)),
+            "Engine did not dispatch custom argument validation asynchronously.");
+        const auto result = events.wait(engine);
+        if (result.kind != cb::EventKind::BuildFailed) events.dump();
+        require(result.kind == cb::EventKind::BuildFailed && result.text.find(L"CMake") != result.text.npos,
+            "A custom argument was allowed to replace the Engine CMake operation or directories.");
+        require(!events.invokedCommand() && !fs::exists(fixture.build)
+            && !fs::exists(fixture.source / L"configure-invocations.txt")
+            && !fs::exists(redirected) && !fs::exists(scriptMarker),
+            "Invalid custom CMake arguments caused process or filesystem side effects before rejection.");
+    }
+    std::cout << "[ PASS ] custom_arguments_reject_cmake_mode_and_directory_overrides" << std::endl;
+}
+
 // A suspended test-owned process still maps and locks its executable image.
 // It cannot run arbitrary work, and its destructor always closes that process.
 class ExecutableLock {
@@ -518,6 +776,8 @@ int wmain(int argc, wchar_t** argv) {
         std::cout << "Temporary fixtures: " << utf8(root.wstring()) << std::endl;
         PathScope pathScope(options.mingwBin);
         checkStandaloneConfiguration(root, options);
+        checkCustomCMakeArguments(root, options);
+        checkRejectedCMakeArguments(root, options);
 
         std::cout << "[ RUN ] fresh_default_excludes_broken_tests" << std::endl;
         const auto fresh = project(root, L"fresh default", true);
@@ -573,7 +833,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << "[ PASS ] locked_executable_explains_lnk1168" << std::endl;
         }
 
-        std::cout << "All " << (options.compiler == cb::CompilerMode::Msvc ? 12 : 11)
+        std::cout << "All " << (options.compiler == cb::CompilerMode::Msvc ? 19 : 18)
             << " Engine progress/build-option cases passed." << std::endl;
         if (!options.keep) {
             std::error_code cleanupError;

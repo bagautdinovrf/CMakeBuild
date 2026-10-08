@@ -2,6 +2,7 @@
 
 #include <nana/gui/programming_interface.hpp>
 #include <nana/gui/widgets/form.hpp>
+#include <nana/gui/widgets/scroll.hpp>
 #include <nana/gui/widgets/textbox.hpp>
 #include <nana/gui/widgets/skeletons/text_editor.hpp>
 #include <nana/paint/graphics.hpp>
@@ -59,6 +60,22 @@ void refresh(TestTextbox& box) {
     editor(box).try_refresh();
     nana::api::refresh_window(box);
     cb::platform::drainPreviewMessages();
+}
+
+template<bool Vertical>
+nana::scroll<Vertical>& scrollbar(TestTextbox& box) {
+    nana::scroll<Vertical>* result{};
+    nana::api::enum_widgets<nana::scroll<Vertical>>(box, false, [&](auto& bar) { result = &bar; });
+    expect(result != nullptr, Vertical ? "Real vertical scrollbar is unavailable" : "Real horizontal scrollbar is unavailable");
+    return *result;
+}
+
+void checkScrollbarOrigins(TestTextbox& box, const std::string& context) {
+    const auto origin = box.content_origin();
+    expect(scrollbar<false>(box).value() == static_cast<std::size_t>(origin.x),
+        context + ": horizontal thumb differs from the displayed viewport");
+    expect(scrollbar<true>(box).value() == static_cast<std::size_t>(origin.y),
+        context + ": vertical thumb differs from the displayed viewport");
 }
 
 class Fixture {
@@ -378,8 +395,127 @@ void retainedSelectionAndViewport() {
         expect(normalized(editor(box).make_select_string()) == selectedText, "Append restoration changed selected Unicode text");
         expect(box.caret_pos() == caret, "Append restoration moved caret");
         expect(box.content_origin() == origin, "Append restoration moved horizontal/vertical viewport");
+        checkScrollbarOrigins(box, "Append with restored selection");
     }
     fixture.check(expected, "Selection-preserving append content and drawing");
+}
+
+void largeDocumentCoordinates() {
+    Fixture fixture;
+    constexpr unsigned rows = 12000;
+    const std::wstring line = L"row 😀\tvalue العربية " + std::wstring(72, L'x') + L'\n';
+    std::wstring text;
+    text.reserve(rows * line.size());
+    for (unsigned row = 0; row < rows; ++row) text += line;
+    fixture.replace(text);
+    auto& box = fixture.incremental;
+    for (const bool wrapped : {false, true, false}) {
+        box.line_wrapped(wrapped);
+        refresh(box);
+        const auto pitch = static_cast<int>(box.line_pixels());
+        const auto rowHeight = editor(box).content_coordinates({0, 1}).y;
+        expect(wrapped ? rowHeight > pitch : rowHeight == pitch,
+            "Coordinate fixture did not establish the expected visual rows");
+        box.caret_pos({7, rows - 1}, false);
+        box.select_points({3, 5000}, {7, 5002});
+        editor(box).restore_content_origin({24, 4900 * rowHeight + 3});
+        const auto origin = box.content_origin();
+        const auto selection = box.selection();
+        const auto caret = box.caret_pos();
+        // Every source row is identical. Its visual displacement is known
+        // independently of whether the editor sums rows or uses an O(1) path.
+        for (const unsigned column : {0u, 3u, 6u, 7u, 10u}) {
+            const auto first = editor(box).content_coordinates({column, 0});
+            for (const unsigned row : {0u, 1u, 39u, 5000u, rows - 1}) {
+                const auto actual = editor(box).content_coordinates({column, row});
+                expect(actual == nana::point{first.x, first.y + static_cast<int>(row) * rowHeight},
+                    wrapped ? "Wrapped caret coordinate lost preceding visual rows"
+                            : "Unwrapped caret coordinate differs in a large document");
+            }
+        }
+        expect(editor(box).content_coordinates({0, rows}).y == static_cast<int>(rows) * rowHeight,
+            "Trailing empty row has the wrong content coordinate");
+        expect(box.content_origin() == origin && box.selection() == selection && box.caret_pos() == caret,
+            "Content coordinate queries changed viewport, selection or caret");
+    }
+}
+
+void restoredScrollbarsRemainInteractive() {
+    for (const bool selected : {false, true}) {
+        Fixture fixture;
+        auto expected = manyLines(120) + std::wstring(2048, L'x');
+        fixture.replace(expected);
+        auto& box = fixture.incremental;
+        box.editable(false);
+        box.caret_pos({2048, 120});
+        if (selected) box.select_points({13, 8}, {18, 12});
+        const auto caret = box.caret_pos();
+        const auto selection = box.selection();
+        const auto pitch = static_cast<int>(box.line_pixels());
+        const nana::point reading{96, 40 * pitch};
+        // Scroll the real controls, leaving the caret at the end. This is the
+        // user's reading position before new build output arrives.
+        scrollbar<false>(box).value(reading.x);
+        scrollbar<true>(box).value(reading.y);
+        expect(box.content_origin() == reading, "Manual reading position was not applied");
+
+        for (unsigned batch = 0; batch < 4; ++batch) {
+            const std::wstring packet = L"\nnew output while reading " + std::to_wstring(batch);
+            box.select(false);
+            box.append(packet, false);
+            box.caret_pos(caret, false);
+            if (selected) box.select_points(selection.first, selection.second);
+            editor(box).restore_content_origin(reading);
+            refresh(box);
+            expected += packet;
+            expect(normalized(box.caption_wstring()) == expected, "Reading restoration changed appended text");
+            expect(box.content_origin() == reading, "Append moved the displayed reading position");
+            checkScrollbarOrigins(box, selected ? "Append while selecting" : "Append while reading without selection");
+
+            for (const bool vertical : {false, true}) {
+                for (const bool upwards : {false, true}) {
+                    for (const bool wheel : {false, true}) {
+                        editor(box).restore_content_origin(reading);
+                        const auto step = static_cast<int>(vertical ? scrollbar<true>(box).step() : scrollbar<false>(box).step());
+                        auto next = reading;
+                        (vertical ? next.y : next.x) += upwards ? -step : step;
+                        if (wheel) {
+                            nana::arg_wheel event{};
+                            event.evt_code = nana::event_code::mouse_wheel;
+                            event.window_handle = box;
+                            event.pos = {20, 20};
+                            event.which = vertical ? nana::arg_wheel::wheel::vertical : nana::arg_wheel::wheel::horizontal;
+                            event.upwards = upwards;
+                            event.distance = 120;
+                            nana::api::emit_event(nana::event_code::mouse_wheel, box, event);
+                        } else editor(box).scroll(upwards, vertical);
+                        refresh(box);
+                        expect(box.content_origin() == next,
+                            std::string{wheel ? "Wheel" : "Scroll command"} + (vertical ? " vertically" : " horizontally")
+                                + (upwards ? " backwards" : " forwards") + " restarted from another position after append");
+                        checkScrollbarOrigins(box, "Interactive scroll after append");
+                        expect(box.caret_pos() == caret, "Restored scrollbar moved caret");
+                        expect(box.selected() == selected && (!selected || box.selection() == selection),
+                            "Restored scrollbar changed selection");
+                    }
+                }
+            }
+            editor(box).restore_content_origin(reading);
+        }
+
+        editor(box).restore_content_origin({0, 0});
+        expect(box.content_origin() == nana::point{}, "Restoring the beginning left a stale viewport");
+        checkScrollbarOrigins(box, "Restore the beginning");
+        editor(box).restore_content_origin({1000000, 1000000});
+        const nana::point limit{
+            static_cast<int>(scrollbar<false>(box).amount() - scrollbar<false>(box).range()),
+            static_cast<int>(scrollbar<true>(box).amount() - scrollbar<true>(box).range())};
+        expect(box.content_origin() == limit, "Restored origin beyond the end was not clamped");
+        checkScrollbarOrigins(box, "Restore beyond the end");
+        editor(box).restore_content_origin(limit);
+        expect(box.content_origin() == limit, "Restoring an unchanged origin moved the viewport");
+        checkScrollbarOrigins(box, "Restore unchanged origin");
+    }
 }
 } // namespace
 
@@ -390,6 +526,8 @@ int wmain() {
         middleEdits();
         geometryAndFont();
         retainedSelectionAndViewport();
+        restoredScrollbarsRemainInteractive();
+        largeDocumentCoordinates();
         cb::platform::shutdown();
         std::cout << "Nana incremental editor correctness passed (text, undo/redo, scroll extents, rendering, resize/font/DPI/wrap)\n";
         return 0;

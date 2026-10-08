@@ -168,12 +168,25 @@ void icon(nana::paint::graphics& g, unsigned kind, nana::point center, double sc
     }
 }
 template<bool Vertical> void paintScroll(nana::scroll<Vertical>& scroll, const Palette& p, double scale) {
-    scroll.scheme().button_size=static_cast<unsigned>(std::lround(16*scale));
-    static std::map<nana::window,nana::drawing_handle> drawings;
+    struct ScrollStyle { Palette palette; double scale; };
+    static std::map<nana::window,std::shared_ptr<ScrollStyle>> drawings;
     const auto handle=scroll.handle();
-    if(const auto old=drawings.find(handle);old!=drawings.end()) nana::api::remove_drawing(handle,old->second);
-    else scroll.events().destroy([handle] { drawings.erase(handle); });
-    drawings[handle]=scroll.drawing([&scroll,p,scale](nana::paint::graphics& g) {
+    if(const auto old=drawings.find(handle);old!=drawings.end()) {
+        auto& style=*old->second;
+        if(style.scale==scale && style.palette.scrollTrack==p.scrollTrack
+            && style.palette.scrollThumb==p.scrollThumb && style.palette.muted==p.muted) return;
+        style={p,scale};
+        scroll.scheme().button_size=static_cast<unsigned>(std::lround(16*scale));
+        nana::api::refresh_window(scroll);
+        return;
+    }
+    scroll.scheme().button_size=static_cast<unsigned>(std::lround(16*scale));
+    const auto style=std::make_shared<ScrollStyle>(ScrollStyle{p,scale});
+    drawings.emplace(handle,style);
+    scroll.events().destroy([handle] { drawings.erase(handle); });
+    scroll.drawing([&scroll,style](nana::paint::graphics& g) {
+        const auto& p=style->palette;
+        const auto scale=style->scale;
         g.rectangle(true,p.scrollTrack);
         const int button=static_cast<int>(scroll.scheme().button_size);
         const int extent=static_cast<int>(Vertical ? g.height() : g.width());
@@ -259,6 +272,7 @@ std::uint64_t savePreview(nana::form& form, const std::wstring& file) {
 
 void JournalBox::restoreView(nana::point p) { get_drawer_trigger().editor()->restore_content_origin(p); }
 void JournalBox::scrollSpace(unsigned pixels) { get_drawer_trigger().editor()->scroll_space(pixels); }
+void JournalBox::scrollCorner(const nana::color& color) { get_drawer_trigger().editor()->scroll_corner_color(color); }
 void JournalBox::padding(unsigned top,unsigned right,unsigned bottom,unsigned left) {get_drawer_trigger().editor()->padding(top,right,bottom,left);}
 unsigned JournalBox::linePitch() const { return std::max(1u, get_drawer_trigger().editor()->line_height()); }
 void JournalBox::textGeometry(double scale,int logicalTextY,int physicalWindowY) {
@@ -333,73 +347,77 @@ void JournalBox::scrollToEnd() {
 }
 void JournalBox::update(const Journal& journal, bool autoScroll) {
     if (journal.revision() == revision_) return;
-    const auto oldOrigin = content_origin();
-    const auto oldCaret = caret_pos();
-    const auto oldSelection = selection();
-    const auto anchor = get_drawer_trigger().editor()->content_anchor();
-    const auto anchorCoordinates = get_drawer_trigger().editor()->content_coordinates(anchor);
-    const bool hadSelection = selected();
-    const auto positions = text_position();
-    const auto lastLine = text_line_count() ? text_line_count() - 1 : 0;
-    const bool atEnd = positions.empty() || positions.back().y >= lastLine;
-    const bool follow = autoScroll && atEnd && !hadSelection;
-    const auto removedNow = journal.totalRemovedBytes() - removed_;
-    std::size_t removedUnits{};
-    std::wstring droppedWide, previousWide, currentWide;
-    if (removedNow) {
-        const auto dropped = previous_.substr(0, static_cast<std::size_t>(std::min<std::uint64_t>(removedNow, previous_.size())));
-        droppedWide = platform::utf16(dropped);
-        removedUnits = droppedWide.size();
-        if (!follow) {
-            previousWide = platform::utf16(previous_); currentWide = platform::utf16(journal.text());
-        }
-    }
-    if (!removedNow && journal.text().starts_with(previous_)) {
-        // Appending with a selection would replace it. Temporarily release the
-        // selection, then restore caret/selection and both viewport coordinates.
-        select(false);
-        append(platform::utf16(journal.text().substr(previous_.size())), false);
-    } else if (removedNow && removedNow <= previous_.size()
-        && journal.text().starts_with(std::string_view{previous_}.substr(static_cast<std::size_t>(removedNow)))) {
-        // Retained rows already have measured extents. Erase only the old prefix,
-        // then append new rows instead of replacing and measuring the whole log.
-        const auto row = static_cast<unsigned>(std::count(droppedWide.begin(), droppedWide.end(), L'\n'));
-        const auto newline = droppedWide.rfind(L'\n');
-        const nana::upoint end{static_cast<unsigned>(newline == std::wstring::npos
-            ? droppedWide.size() : droppedWide.size() - newline - 1), row};
-        auto* editor = get_drawer_trigger().editor();
-        editor->select_points({0, 0}, end);
-        editor->backspace(false, false);
-        const auto retainedBytes = previous_.size() - static_cast<std::size_t>(removedNow);
-        append(platform::utf16(journal.text().substr(retainedBytes)), false);
-    } else get_drawer_trigger().editor()->text(platform::utf16(journal.text()),false);
-    if (follow) scrollToEnd();
-    else {
-        const auto adjust = [&](nana::upoint p) {
-            if (!removedNow) return p;
-            std::size_t line{}, offset{};
-            while (line < p.y && offset < previousWide.size()) {
-                const auto newline = previousWide.find(L'\n', offset);
-                if (newline == std::wstring::npos) { offset = previousWide.size(); break; }
-                offset = newline + 1; ++line;
-            }
-            const auto lineEnd = previousWide.find(L'\n', offset);
-            offset += std::min<std::size_t>(p.x, (lineEnd == std::wstring::npos ? previousWide.size() : lineEnd) - offset);
-            offset = offset > removedUnits ? offset - removedUnits : 0;
-            offset = std::min(offset, currentWide.size());
-            const auto row = static_cast<unsigned>(std::count(currentWide.begin(), currentWide.begin() + static_cast<std::ptrdiff_t>(offset), L'\n'));
-            const auto start = offset ? currentWide.rfind(L'\n', offset - 1) : std::wstring::npos;
-            return nana::upoint{static_cast<unsigned>(start == std::wstring::npos ? offset : offset - start - 1), row};
-        };
-        caret_pos(adjust(oldCaret), false);
-        if (hadSelection) select_points(adjust(oldSelection.first), adjust(oldSelection.second));
+    // Append/pruning may temporarily move the caret and scrollbar values.
+    // Publish the widget tree only after the complete reading state is restored.
+    nana::api::batch_updates(*this, [&] {
+        const auto oldOrigin = content_origin();
+        const auto oldCaret = caret_pos();
+        const auto oldSelection = selection();
+        const auto anchor = get_drawer_trigger().editor()->content_anchor();
+        const auto anchorCoordinates = get_drawer_trigger().editor()->content_coordinates(anchor);
+        const bool hadSelection = selected();
+        const auto positions = text_position();
+        const auto lastLine = text_line_count() ? text_line_count() - 1 : 0;
+        const bool atEnd = positions.empty() || positions.back().y >= lastLine;
+        const bool follow = autoScroll && atEnd && !hadSelection;
+        const auto removedNow = journal.totalRemovedBytes() - removed_;
+        std::size_t removedUnits{};
+        std::wstring droppedWide, previousWide, currentWide;
         if (removedNow) {
-            const auto coordinates = get_drawer_trigger().editor()->content_coordinates(adjust(anchor));
-            restoreView({std::max(0, oldOrigin.x + coordinates.x - anchorCoordinates.x), std::max(0, oldOrigin.y + coordinates.y - anchorCoordinates.y)});
-        } else restoreView(oldOrigin);
-    }
-    previous_ = journal.text(); revision_ = journal.revision(); removed_ = journal.totalRemovedBytes();
-    nana::api::refresh_window(*this);
+            const auto dropped = previous_.substr(0, static_cast<std::size_t>(std::min<std::uint64_t>(removedNow, previous_.size())));
+            droppedWide = platform::utf16(dropped);
+            removedUnits = droppedWide.size();
+            if (!follow) {
+                previousWide = platform::utf16(previous_); currentWide = platform::utf16(journal.text());
+            }
+        }
+        if (!removedNow && journal.text().starts_with(previous_)) {
+            // Appending with a selection would replace it. Temporarily release the
+            // selection, then restore caret/selection and both viewport coordinates.
+            select(false);
+            append(platform::utf16(journal.text().substr(previous_.size())), false);
+        } else if (removedNow && removedNow <= previous_.size()
+            && journal.text().starts_with(std::string_view{previous_}.substr(static_cast<std::size_t>(removedNow)))) {
+            // Retained rows already have measured extents. Erase only the old prefix,
+            // then append new rows instead of replacing and measuring the whole log.
+            const auto row = static_cast<unsigned>(std::count(droppedWide.begin(), droppedWide.end(), L'\n'));
+            const auto newline = droppedWide.rfind(L'\n');
+            const nana::upoint end{static_cast<unsigned>(newline == std::wstring::npos
+                ? droppedWide.size() : droppedWide.size() - newline - 1), row};
+            auto* editor = get_drawer_trigger().editor();
+            editor->select_points({0, 0}, end);
+            editor->backspace(false, false);
+            const auto retainedBytes = previous_.size() - static_cast<std::size_t>(removedNow);
+            append(platform::utf16(journal.text().substr(retainedBytes)), false);
+        } else get_drawer_trigger().editor()->text(platform::utf16(journal.text()),false);
+        if (follow) scrollToEnd();
+        else {
+            const auto adjust = [&](nana::upoint p) {
+                if (!removedNow) return p;
+                std::size_t line{}, offset{};
+                while (line < p.y && offset < previousWide.size()) {
+                    const auto newline = previousWide.find(L'\n', offset);
+                    if (newline == std::wstring::npos) { offset = previousWide.size(); break; }
+                    offset = newline + 1; ++line;
+                }
+                const auto lineEnd = previousWide.find(L'\n', offset);
+                offset += std::min<std::size_t>(p.x, (lineEnd == std::wstring::npos ? previousWide.size() : lineEnd) - offset);
+                offset = offset > removedUnits ? offset - removedUnits : 0;
+                offset = std::min(offset, currentWide.size());
+                const auto row = static_cast<unsigned>(std::count(currentWide.begin(), currentWide.begin() + static_cast<std::ptrdiff_t>(offset), L'\n'));
+                const auto start = offset ? currentWide.rfind(L'\n', offset - 1) : std::wstring::npos;
+                return nana::upoint{static_cast<unsigned>(start == std::wstring::npos ? offset : offset - start - 1), row};
+            };
+            caret_pos(adjust(oldCaret), false);
+            if (hadSelection) select_points(adjust(oldSelection.first), adjust(oldSelection.second));
+            if (removedNow) {
+                const auto coordinates = get_drawer_trigger().editor()->content_coordinates(adjust(anchor));
+                restoreView({std::max(0, oldOrigin.x + coordinates.x - anchorCoordinates.x), std::max(0, oldOrigin.y + coordinates.y - anchorCoordinates.y)});
+            } else restoreView(oldOrigin);
+        }
+        previous_ = journal.text(); revision_ = journal.revision(); removed_ = journal.totalRemovedBytes();
+        nana::api::refresh_window(*this);
+    });
 }
 
 Panel::Panel(AppState& state, bool hidden)
@@ -704,16 +722,19 @@ void Panel::layout(bool fitHeight) {
 }
 void Panel::previewScale(double scale) { previewScale_=true; scale_=scale; layout(true); refresh(); }
 void Panel::theme(bool dark) {
-    refreshValid_ = false;
-    dark_ = dark; palette_ = Palette::system(dark);
-    for (auto* w : std::initializer_list<nana::widget*>{static_cast<nana::widget*>(&form_), &project_, &recent_, &build_, &buildMenu_, &run_, &runMenu_, &settings_, &pin_, &log_, &minimize_, &close_}) colorWidget(*w, palette_);
-    colorWidget(journal_, palette_, true);
-    journal_.scheme().selection = palette_.accent;
-    journal_.scheme().selection_unfocused = palette_.accent.blend(palette_.surface, .40);
-    journal_.scheme().selection_text = dark ? nana::color{0,0,0} : nana::color{255,255,255};
-    styleScrollbars(journal_,palette_,scale_);
-    platform::setWindowTheme(form_.native_handle(), dark);
-    for (auto* menu : {&projects_, &builds_, &targets_, &journalMenu_}) prepareMenu(*menu);
+    nana::api::batch_updates(form_, [&] {
+        refreshValid_ = false;
+        dark_ = dark; palette_ = Palette::system(dark);
+        for (auto* w : std::initializer_list<nana::widget*>{static_cast<nana::widget*>(&form_), &project_, &recent_, &build_, &buildMenu_, &run_, &runMenu_, &settings_, &pin_, &log_, &minimize_, &close_}) colorWidget(*w, palette_);
+        colorWidget(journal_, palette_, true);
+        journal_.scrollCorner(palette_.scrollTrack);
+        journal_.scheme().selection = palette_.accent;
+        journal_.scheme().selection_unfocused = palette_.accent.blend(palette_.surface, .40);
+        journal_.scheme().selection_text = dark ? nana::color{0,0,0} : nana::color{255,255,255};
+        styleScrollbars(journal_,palette_,scale_);
+        platform::setWindowTheme(form_.native_handle(), dark);
+        for (auto* menu : {&projects_, &builds_, &targets_, &journalMenu_}) prepareMenu(*menu);
+    });
 }
 void Panel::prepareMenu(nana::menu& menu) {
     const bool journal=&menu==&journalMenu_;
@@ -746,44 +767,47 @@ void Panel::refreshPanel(bool animate) {
         || previous.logVisible != state_.logVisible || previous.progress != progress || previous.duration != duration
         || previous.project != state_.settings.cmakeFile || previous.status != controller_.status()
         || (journalChanged && duration && previous.durationText != controller_.durationText());
-    if (journalChanged) {
-        journal_.update(controller_.journal(), autoScroll_);
-        // Nana creates/closes the two scrollbars as content starts/stops
-        // overflowing. Newly created bars need the current custom drawing.
-        styleScrollbars(journal_, palette_, scale_);
-        observedJournalRevision_ = revision;
-    }
-    if (!chromeChanged) {
-        if (pulse) nana::api::refresh_window(form_);
-        return;
-    }
-    project_.enabled(idle); recent_.enabled(idle); settings_.enabled(idle); buildMenu_.enabled(idle);
-    build_.enabled(!running && !controller_.cancellationRequested());
-    run_.enabled(!controller_.cancellationRequested()
-        && (running || (idle && !state_.targets.empty()) || (building && controller_.canQueueRun() && !controller_.runQueued())));
-    runMenu_.enabled(idle && !state_.targets.empty());
-    const std::array<nana::button*,11> buttons{&project_,&build_,&run_,&runMenu_,&pin_,&settings_,&log_,&minimize_,&close_,&buildMenu_,&recent_};
-    for(unsigned index=0;index<buttons.size();++index) if(!buttons[index]->enabled()) buttonStates_[index]={};
-    setCaption(build_, building ? L"Отменить" : state_.buildAndRun ? L"Собрать и запустить" : L"Собрать");
-    setCaption(run_, running ? L"Остановить" : controller_.runQueued() ? L"Ожидание" : L"Запустить");
-    setCaption(pin_,state_.pinned ? L"Поверх окон" : L"Закрепить");
-    project_.tooltip(state_.settings.cmakeFile.empty() ? "Выбрать CMakeLists.txt проекта (Ctrl+O)" : platform::utf8(state_.settings.cmakeFile));
-    run_.tooltip(controller_.runQueued() ? "Запуск после успешной сборки" : running ? "Остановить приложение и дочерние процессы (Ctrl+F5)" : "Запустить или поставить запуск в очередь (Ctrl+F5)");
-    build_.tooltip(building ? "Отменить текущую операцию (F6)" : state_.buildAndRun
-        ? "Собрать и запустить (F5). Режим кнопки выбирается в меню" : "Собрать (F6). Режим кнопки выбирается в меню");
-    settings_.tooltip("Настройки проекта и запуска"); pin_.tooltip(state_.pinned ? "Открепить панель" : "Поверх остальных окон"); log_.tooltip(state_.logVisible ? "Скрыть журнал" : "Показать журнал");
-    observedRefresh_ = {
-        .operation = operation, .action = controller_.buildAction(),
-        .failed = controller_.failed(), .cancelling = controller_.cancellationRequested(),
-        .canQueue = controller_.canQueueRun(), .runQueued = controller_.runQueued(),
-        .hasTargets = !state_.targets.empty(), .pinned = state_.pinned, .logVisible = state_.logVisible,
-        .buildAndRun = state_.buildAndRun,
-        .progress = progress, .duration = duration,
-        .project = state_.settings.cmakeFile, .status = controller_.status(), .durationText = controller_.durationText()
-    };
-    refreshValid_ = true;
-    nana::api::refresh_window(form_);
-    for(auto* b:{&project_,&recent_,&build_,&buildMenu_,&run_,&runMenu_,&settings_,&pin_,&log_,&minimize_,&close_}) nana::api::refresh_window(*b);
+    if (!journalChanged && !chromeChanged && !pulse) return;
+    nana::api::batch_updates(form_, [&] {
+        if (journalChanged) {
+            journal_.update(controller_.journal(), autoScroll_);
+            // Nana creates/closes the two scrollbars as content starts/stops
+            // overflowing. Newly created bars need the current custom drawing.
+            styleScrollbars(journal_, palette_, scale_);
+            observedJournalRevision_ = revision;
+        }
+        if (!chromeChanged) {
+            if (pulse) nana::api::refresh_window(form_);
+            return;
+        }
+        project_.enabled(idle); recent_.enabled(idle); settings_.enabled(idle); buildMenu_.enabled(idle);
+        build_.enabled(!running && !controller_.cancellationRequested());
+        run_.enabled(!controller_.cancellationRequested()
+            && (running || (idle && !state_.targets.empty()) || (building && controller_.canQueueRun() && !controller_.runQueued())));
+        runMenu_.enabled(idle && !state_.targets.empty());
+        const std::array<nana::button*,11> buttons{&project_,&build_,&run_,&runMenu_,&pin_,&settings_,&log_,&minimize_,&close_,&buildMenu_,&recent_};
+        for(unsigned index=0;index<buttons.size();++index) if(!buttons[index]->enabled()) buttonStates_[index]={};
+        setCaption(build_, building ? L"Отменить" : state_.buildAndRun ? L"Собрать и запустить" : L"Собрать");
+        setCaption(run_, running ? L"Остановить" : controller_.runQueued() ? L"Ожидание" : L"Запустить");
+        setCaption(pin_,state_.pinned ? L"Поверх окон" : L"Закрепить");
+        project_.tooltip(state_.settings.cmakeFile.empty() ? "Выбрать CMakeLists.txt проекта (Ctrl+O)" : platform::utf8(state_.settings.cmakeFile));
+        run_.tooltip(controller_.runQueued() ? "Запуск после успешной сборки" : running ? "Остановить приложение и дочерние процессы (Ctrl+F5)" : "Запустить или поставить запуск в очередь (Ctrl+F5)");
+        build_.tooltip(building ? "Отменить текущую операцию (F6)" : state_.buildAndRun
+            ? "Собрать и запустить (F5). Режим кнопки выбирается в меню" : "Собрать (F6). Режим кнопки выбирается в меню");
+        settings_.tooltip("Настройки проекта и запуска"); pin_.tooltip(state_.pinned ? "Открепить панель" : "Поверх остальных окон"); log_.tooltip(state_.logVisible ? "Скрыть журнал" : "Показать журнал");
+        observedRefresh_ = {
+            .operation = operation, .action = controller_.buildAction(),
+            .failed = controller_.failed(), .cancelling = controller_.cancellationRequested(),
+            .canQueue = controller_.canQueueRun(), .runQueued = controller_.runQueued(),
+            .hasTargets = !state_.targets.empty(), .pinned = state_.pinned, .logVisible = state_.logVisible,
+            .buildAndRun = state_.buildAndRun,
+            .progress = progress, .duration = duration,
+            .project = state_.settings.cmakeFile, .status = controller_.status(), .durationText = controller_.durationText()
+        };
+        refreshValid_ = true;
+        nana::api::refresh_window(form_);
+        for(auto* b:{&project_,&recent_,&build_,&buildMenu_,&run_,&runMenu_,&settings_,&pin_,&log_,&minimize_,&close_}) nana::api::refresh_window(*b);
+    });
 }
 void Panel::selectProject() {
     if (controller_.operation() != Operation::Idle) return;
@@ -860,6 +884,94 @@ int runUiSmoke(const std::wstring& isolatedIni, const std::wstring& imageDirecto
     expect(panel.runButton().caption_wstring() == L"Запустить", "run caption");
     const auto geometry = panel.runButton().size();
     auto& journal = panel.controller().journal();
+    const auto journalScrollbar = [&](bool vertical) -> nana::scroll_interface& {
+        nana::scroll_interface* result{};
+        nana::api::enum_widgets<nana::widget>(panel.journal(), true, [&](nana::widget& child) {
+            if (vertical) {
+                if (auto* bar = dynamic_cast<nana::scroll<true>*>(&child)) result = bar;
+            } else if (auto* bar = dynamic_cast<nana::scroll<false>*>(&child)) result = bar;
+        });
+        expect(result != nullptr, "journal regression fixture is missing a scrollbar");
+        return *result;
+    };
+    const auto expectJournalScrollbars = [&](const char* context) {
+        const auto origin = panel.journal().content_origin();
+        expect(journalScrollbar(false).value() == static_cast<std::size_t>(origin.x)
+            && journalScrollbar(true).value() == static_cast<std::size_t>(origin.y), context);
+    };
+    const auto continueJournalScrolling = [&](const char* context) {
+        // Exercise the real content-view wheel callback, which starts from the
+        // scrollbar value. Preserving painted rows alone misses a stale thumb.
+        for (const bool vertical : {true, false}) for (const bool upwards : {true, false}) {
+            const auto before = panel.journal().content_origin();
+            auto expected = before;
+            auto& coordinate = vertical ? expected.y : expected.x;
+            auto& scrollbar = journalScrollbar(vertical);
+            const auto step = static_cast<int>(scrollbar.step());
+            const auto remainder = coordinate % step;
+            coordinate = upwards ? std::max(0, coordinate - (remainder ? remainder : step))
+                : std::min(static_cast<int>(scrollbar.amount() - scrollbar.range()), coordinate + step - remainder);
+            nana::arg_wheel wheel{};
+            wheel.evt_code = nana::event_code::mouse_wheel;
+            wheel.window_handle = panel.journal().handle();
+            wheel.which = vertical ? nana::arg_wheel::wheel::vertical : nana::arg_wheel::wheel::horizontal;
+            wheel.upwards = upwards; wheel.distance = 120; wheel.pos = {20, 20};
+            panel.journal().events().mouse_wheel.emit(wheel, panel.journal().handle());
+            expect(expected != before && panel.journal().content_origin() == expected, context);
+            expectJournalScrollbars(context);
+        }
+    };
+    const auto rootFrameHash = [&]() -> std::optional<std::uint64_t> {
+        nana::paint::graphics root;
+        if (!nana::api::root_graphics(panel.form(), root) || root.empty()) return {};
+        nana::paint::pixel_buffer pixels{root.handle(), nana::rectangle{root.size()}};
+        std::uint64_t hash = 1469598103934665603ull;
+        for (unsigned row = 0; row < pixels.size().height; ++row)
+            for (unsigned column = 0; column < pixels.size().width; ++column)
+                hash = (hash ^ (pixels.raw_ptr(row)[column].value & 0x00ffffff)) * 1099511628211ull;
+        return hash;
+    };
+    const auto updateJournalBatch = [&](const char* context) {
+        const auto originalFrame = rootFrameHash();
+        expect(originalFrame.has_value(), "journal batch could not read the composed root frame");
+        const auto originalOrigin = panel.journal().content_origin();
+        unsigned journalDraws{}, scrollbarDraws{}, intermediateViews{};
+        bool stable = true;
+        {
+            struct DrawingProbes {
+                std::array<std::pair<nana::window, nana::drawing_handle>, 3> handles{};
+                ~DrawingProbes() {
+                    for (const auto& [window, drawing] : handles)
+                        if (drawing) nana::api::remove_drawing(window, drawing);
+                }
+            } probes;
+            const std::array windows{panel.journal().handle(), journalScrollbar(true).window_handle(),
+                journalScrollbar(false).window_handle()};
+            for (std::size_t index = 0; index < windows.size(); ++index) {
+                const auto window = windows[index];
+                probes.handles[index] = {window, nana::api::drawing(window, [&, index](nana::paint::graphics&) {
+                    if (index == 0) ++journalDraws; else ++scrollbarDraws;
+                    intermediateViews += panel.journal().content_origin() != originalOrigin;
+                    stable &= rootFrameHash() == originalFrame;
+                })};
+            }
+            // Observe the real JournalBox transaction alone. Panel::refresh
+            // also refreshes scrollbar styling after the final frame is ready.
+            panel.journal().update(journal, panel.autoScroll_);
+        }
+        expect(journalDraws > 0 && scrollbarDraws > 0 && intermediateViews > 0,
+            "journal batch fixture did not exercise intermediate drawing");
+        expect(stable, context);
+        const auto finalFrame = rootFrameHash();
+        expect(finalFrame && finalFrame != originalFrame, "journal batch did not publish its final composed frame");
+        panel.refresh();
+    };
+    const auto expectJournalFollowing = [&](const char* context) {
+        const auto positions = panel.journal().text_position();
+        expect(!positions.empty() && positions.back().y + 1 >= panel.journal().text_line_count()
+            && panel.journal().caret_pos().y + 1 == panel.journal().text_line_count(), context);
+        expectJournalScrollbars(context);
+    };
     for (int i = 0; i < 250; ++i) journal.append(L"Строка журнала " + std::to_wstring(i) + L" — Unicode и диагностика\n");
     panel.refresh();
     // Observe real drawer callbacks instead of asserting unstable wall times.
@@ -920,11 +1032,120 @@ int runUiSmoke(const std::wstring& isolatedIni, const std::wstring& imageDirecto
     nana::api::remove_drawing(panel.form(), formProbe);
     nana::api::remove_drawing(panel.runButton(), runProbe);
     nana::api::remove_drawing(panel.buildButton(), buildProbe);
+    // Scrolling without selecting leaves the caret at the end. An append
+    // temporarily follows that caret, then must restore both scrollbar values.
+    journal.append(std::wstring(275, L'x') + L" horizontal scrolling\n"); panel.refresh();
+    {
+        const auto originalScale = panel.scale_;
+        const auto originalPreview = panel.previewScale_;
+        const auto originalTheme = panel.dark_;
+        const auto originalSize = panel.form().size();
+        const auto originalWidth = state.width;
+        const auto originalHeight = state.logHeight;
+        // Exercise the application's real padding, scrollbar thickness and
+        // painting at each supported preview scale, including fractional DPI.
+        for (bool dark : {false, true}) for (double scale : {1.0, 1.25, 1.5, 2.0}) {
+            state.width = originalWidth; state.logHeight = originalHeight;
+            panel.previewScale(scale); panel.theme(dark); panel.refresh();
+            nana::api::refresh_window_tree(panel.form());
+            const auto vertical = journalScrollbar(true).window_handle();
+            const auto horizontal = journalScrollbar(false).window_handle();
+            const nana::rectangle v{nana::api::window_position(vertical), nana::api::window_size(vertical)};
+            const nana::rectangle h{nana::api::window_position(horizontal), nana::api::window_size(horizontal)};
+            const nana::rectangle corner{v.x, h.y, v.width, h.height};
+            nana::paint::graphics graphic;
+            expect(nana::api::window_graphics(panel.journal(), graphic), "could not capture journal scrollbar junction");
+            const auto expectJunction = [&](bool condition, const char* message) {
+                if (condition) return;
+                const auto describe = [](const nana::rectangle& r) {
+                    return std::to_string(r.x) + "," + std::to_string(r.y) + ","
+                        + std::to_string(r.width) + "x" + std::to_string(r.height);
+                };
+                throw std::runtime_error(std::string{message} + " (scale=" + std::to_string(scale)
+                    + ", theme=" + (dark ? "dark" : "light") + ", v=" + describe(v) + ", h=" + describe(h)
+                    + ", graph=" + std::to_string(graphic.width()) + "x" + std::to_string(graphic.height()) + ")");
+            };
+            const auto thickness = static_cast<unsigned>(16 * scale);
+            expectJunction(v.width == thickness && h.height == thickness,
+                "journal scrollbar thickness does not follow application scale");
+            expectJunction(v.bottom() == h.y && h.right() == v.x,
+                "journal scrollbars leave a gap or overlap at their intersection");
+            // The borderless editor's horizontal skew is 1 + padding_bottom:
+            // its bar and corner extend one pixel below the outer editor area.
+            // Nana clips child composition to that area; inspect every visible
+            // pixel while asserting that exact, pre-existing one-pixel overhang.
+            expectJunction(corner.x > 0 && corner.y > 0 && corner.right() <= static_cast<int>(graphic.width())
+                && corner.bottom() == static_cast<int>(graphic.height()) + 1 && corner.height > 1,
+                "journal scrollbar corner has unexpected clipping at the editor boundary");
+            const nana::rectangle visibleCorner{corner.x, corner.y, corner.width, corner.height - 1};
+            nana::paint::pixel_buffer pixels{graphic.handle(), nana::rectangle{graphic.size()}};
+            const auto track = panel.palette_.scrollTrack.px_color().value & 0x00ffffff;
+            const auto button = panel.palette_.scrollThumb.px_color().value & 0x00ffffff;
+            for (int y = visibleCorner.y; y < visibleCorner.bottom(); ++y)
+                for (int x = visibleCorner.x; x < visibleCorner.right(); ++x)
+                    expectJunction((pixels.pixel(x, y).value & 0x00ffffff) == track,
+                        "journal scrollbar corner does not match its theme's track color");
+            // The last row/column of each arrow button must directly touch the
+            // corner; a strip of editor background here reproduces the gap.
+            for (int x = visibleCorner.x; x < visibleCorner.right(); ++x)
+                expectJunction((pixels.pixel(x, visibleCorner.y - 1).value & 0x00ffffff) == button,
+                    "journal vertical scrollbar leaves an unpainted seam above its corner");
+            for (int y = visibleCorner.y; y < visibleCorner.bottom(); ++y)
+                expectJunction((pixels.pixel(visibleCorner.x - 1, y).value & 0x00ffffff) == button,
+                    "journal horizontal scrollbar leaves an unpainted seam beside its corner");
+            const auto name = std::wstring{L"journal-junction-"} + (dark ? L"dark-" : L"light-")
+                + std::to_wstring(static_cast<int>(scale * 100)) + L".bmp";
+            graphic.save_as_file(platform::utf8((std::filesystem::path(imageDirectory) / name).wstring()).c_str());
+        }
+        state.width = originalWidth; state.logHeight = originalHeight;
+        panel.previewScale(originalScale); panel.theme(originalTheme);
+        panel.form().size(originalSize); panel.refresh();
+        panel.previewScale_ = originalPreview;
+    }
+    unsigned unchangedStylePaints{};
+    std::vector<std::pair<nana::window, nana::drawing_handle>> styleProbes;
+    nana::api::enum_widgets<nana::widget>(panel.journal(), true, [&](nana::widget& child) {
+        if (dynamic_cast<nana::scroll_interface*>(&child))
+            styleProbes.emplace_back(child.handle(), child.drawing([&](nana::paint::graphics&) { ++unchangedStylePaints; }));
+    });
+    for (int repeat = 0; repeat < 20; ++repeat) styleScrollbars(panel.journal(), panel.palette_, panel.scale_);
+    for (const auto& [window, drawing] : styleProbes) nana::api::remove_drawing(window, drawing);
+    expect(styleProbes.size() == 2 && unchangedStylePaints == 0, "unchanged journal styling repainted its scrollbars");
+    panel.journal().select(false); panel.journal().scrollToEnd();
+    journal.append(L"Автопрокрутка у конца журнала\n"); panel.refresh();
+    expectJournalFollowing("journal did not follow new messages while already at the end");
+    const auto readingCaret = panel.journal().caret_pos();
+    journalScrollbar(false).value(72);
+    journalScrollbar(true).value(40 * panel.journal().linePitch() + 3);
+    expect(panel.journal().content_origin().x > 0 && panel.journal().content_origin().y > 0,
+        "journal reading fixture did not scroll away from the origin");
+    for (int packet = 0; packet < 3; ++packet) {
+        const auto readingOrigin = panel.journal().content_origin();
+        const auto message = L"Новая порция во время чтения " + std::to_wstring(packet) + L"\n";
+        // A large first packet visibly moves the thumb even after rounding,
+        // allowing the composed-frame assertion to verify the final flush.
+        for (int line = 0; line < (packet == 0 ? 80 : 1); ++line) journal.append(message);
+        if (packet == 0) updateJournalBatch("journal append exposed an intermediate scroll position");
+        else panel.refresh();
+        expect(!panel.journal().selected() && panel.journal().caret_pos() == readingCaret,
+            "journal append changed the inactive caret while reading");
+        expect(panel.journal().content_origin() == readingOrigin, "journal reading viewport moved on append");
+        expectJournalScrollbars("journal scrollbar moved away from the reading viewport on append");
+        continueJournalScrolling("journal wheel resumed from the wrong position after append");
+    }
+    journalScrollbar(true).value(journalScrollbar(true).amount() - journalScrollbar(true).range());
+    journal.append(L"Автопрокрутка после возврата вниз\n"); panel.refresh();
+    expectJournalFollowing("journal did not resume following after scrolling back to the end");
     panel.journal().caret_pos({2, 12}); panel.journal().select_points({2, 12}, {7, 15});
+    journalScrollbar(false).value(72);
+    journalScrollbar(true).value(8 * panel.journal().linePitch() + 3);
     const auto selection = panel.journal().selection(); const auto origin = panel.journal().content_origin();
     journal.append(L"Новая строка\n"); panel.refresh();
     expect(panel.journal().selection() == selection, "journal selection moved on append");
     expect(panel.journal().content_origin() == origin, "journal viewport moved on append");
+    expectJournalScrollbars("journal scrollbar moved away from the selected viewport on append");
+    continueJournalScrolling("journal wheel resumed from the wrong position with a selection");
+    expect(panel.journal().selection() == selection, "journal wheel changed the selection");
     journal.append(L"😀 После non-BMP Unicode текст сохраняется\n"); panel.refresh();
     expect(panel.journal().caption_wstring().find(L"После non-BMP Unicode текст сохраняется")!=std::wstring::npos,"journal lost text following Unicode emoji");
     preparePreview(panel.form());
@@ -976,13 +1197,16 @@ int runUiSmoke(const std::wstring& isolatedIni, const std::wstring& imageDirecto
     const auto trimPrevious = journal.text();
     std::wstring moreLines;
     for (int row = 0; row < 600; ++row) moreLines += trimLine;
-    journal.append(moreLines); panel.refresh();
+    journal.append(moreLines);
+    updateJournalBatch("journal pruning exposed an intermediate scroll position");
     const auto removedBytes = static_cast<std::size_t>(journal.totalRemovedBytes() - trimRemoved);
     expect(removedBytes < trimPrevious.size(), "multiline trim fixture has no retained old rows");
     const auto droppedRows = static_cast<unsigned>(std::count(trimPrevious.begin(), trimPrevious.begin() + static_cast<std::ptrdiff_t>(removedBytes), '\n'));
     expect(panel.journal().selection() == std::pair<nana::upoint, nana::upoint>{{0, 2800 - droppedRows}, {2, 2802 - droppedRows}}, "multiline pruning changed Unicode selection");
     expect(panel.journal().caret_pos() == nana::upoint{trimCaret.x, trimCaret.y - droppedRows}, "multiline pruning changed caret");
     expect(panel.journal().content_origin() == nana::point{trimOrigin.x, trimOrigin.y - static_cast<int>(droppedRows * panel.journal().linePitch())}, "multiline pruning moved the retained viewport");
+    expectJournalScrollbars("multiline pruning left scrollbar values outside the retained viewport");
+    continueJournalScrolling("journal wheel resumed from the wrong position after multiline pruning");
     const auto expectJournalText = [&] {
         auto actual = panel.journal().caption_wstring();
         std::erase(actual, L'\r');

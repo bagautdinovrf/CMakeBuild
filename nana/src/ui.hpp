@@ -32,6 +32,7 @@ public:
     void scrollToEnd();
     void restoreView(nana::point);
     void scrollSpace(unsigned);
+    void scrollCorner(const nana::color&);
     void padding(unsigned top, unsigned right, unsigned bottom, unsigned left);
     void textGeometry(double scale, int logicalTextY, int physicalWindowY);
     unsigned linePitch() const;

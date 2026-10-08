@@ -414,6 +414,90 @@ std::wstring commandLine(const fs::path& executable, const std::vector<std::wstr
     return result;
 }
 
+std::vector<std::wstring> configureArguments(std::wstring_view text) {
+    if (text.size() >= 32767 || std::ranges::any_of(text, [](wchar_t ch) { return ch < L' ' && ch != L'\t'; })) {
+        throw Failure(L"Параметры CMake должны занимать одну строку длиной менее 32767 символов.");
+    }
+    // Inverse of quoteArgument: CRT double quotes and backslashes, no shell.
+    std::vector<std::wstring> arguments;
+    size_t position = 0;
+    while (position < text.size()) {
+        while (position < text.size() && (text[position] == L' ' || text[position] == L'\t')) ++position;
+        if (position == text.size()) break;
+        std::wstring argument;
+        bool quoted = false;
+        while (position < text.size()) {
+            if (!quoted && (text[position] == L' ' || text[position] == L'\t')) break;
+            size_t backslashes = 0;
+            while (position < text.size() && text[position] == L'\\') { ++backslashes; ++position; }
+            if (position < text.size() && text[position] == L'"') {
+                argument.append(backslashes / 2, L'\\');
+                if (backslashes % 2) argument.push_back(L'"');
+                else if (quoted && position + 1 < text.size() && text[position + 1] == L'"') {
+                    argument.push_back(L'"');
+                    ++position;
+                } else quoted = !quoted;
+                ++position;
+            } else {
+                argument.append(backslashes, L'\\');
+                if (position == text.size() || (!quoted && (text[position] == L' ' || text[position] == L'\t'))) break;
+                argument.push_back(text[position++]);
+            }
+        }
+        if (quoted) throw Failure(L"В параметрах CMake не закрыта двойная кавычка.");
+        arguments.push_back(std::move(argument));
+    }
+    const auto rejectReserved = [](const std::wstring& argument) {
+        const auto option = argument.substr(0, argument.find(L'='));
+        const auto invalid = [&] {
+            throw Failure(L"Недопустимый параметр CMake: " + argument
+                + L". Путь проекта, каталог сборки, генератор и действие задаются панелью.");
+        };
+        for (const auto* reserved : {L"--build", L"--install", L"--open", L"--workflow", L"--preset",
+                L"--list-presets", L"--find-package", L"--help", L"--version", L"--fresh", L"--system-information"}) {
+            if (option == reserved || (std::wstring_view(reserved) == L"--help" && option.starts_with(L"--help-"))) invalid();
+        }
+        if (argument == L"--" || argument.starts_with(L"-S") || argument.starts_with(L"-B")
+            || argument.starts_with(L"-G") || argument.starts_with(L"-A") || argument.starts_with(L"-T")
+            || argument.starts_with(L"-P") || argument.starts_with(L"-E") || argument.starts_with(L"-H")
+            || argument == L"-N" || argument == L"-h" || argument == L"-?" || argument == L"-version"
+            || argument == L"-help" || argument == L"-usage" || argument == L"/?" || argument == L"/V") invalid();
+    };
+    // CMake handles help and mode flags before it parses option/value pairs.
+    // A token consumed as a value here must not bypass that first CMake pass.
+    for (const auto& argument : arguments) rejectReserved(argument);
+    const auto validateDefinition = [](std::wstring_view definition) {
+        const auto name = definition.substr(0, definition.find_first_of(L":="));
+        for (const auto* reserved : {L"CMAKE_GENERATOR", L"CMAKE_GENERATOR_PLATFORM", L"CMAKE_GENERATOR_TOOLSET",
+                L"CMAKE_HOME_DIRECTORY", L"CMAKE_CACHEFILE_DIR", L"CMAKE_COMMAND",
+                L"CMAKE_C_COMPILER", L"CMAKE_CXX_COMPILER", L"CMAKE_MAKE_PROGRAM"}) {
+            if (name == reserved) {
+                throw Failure(L"Параметр CMake " + std::wstring(name)
+                    + L" задаётся панелью. Выберите CMake, компилятор и каталог сборки в настройках.");
+            }
+        }
+    };
+    for (size_t index = 0; index < arguments.size(); ++index) {
+        const auto& argument = arguments[index];
+        if (argument.empty() || argument.front() != L'-') {
+            throw Failure(L"Недопустимый параметр CMake: " + argument
+                + L". Путь проекта и каталог сборки задаются панелью.");
+        }
+        if (argument.starts_with(L"-D") && argument.size() > 2)
+            validateDefinition(std::wstring_view(argument).substr(2));
+        // These configure switches consume a separate value, which may begin with '-'.
+        if (argument == L"-D" || argument == L"-U" || argument == L"-C" || argument == L"-W"
+            || argument == L"--log-level" || argument == L"--trace-source" || argument == L"--trace-redirect"
+            || argument == L"--profiling-format" || argument == L"--profiling-output"
+            || argument == L"--toolchain" || argument == L"--install-prefix") {
+            if (++index == arguments.size() || arguments[index].empty())
+                throw Failure(L"Укажите значение параметра CMake " + argument + L".");
+            if (argument == L"-D") validateDefinition(arguments[index]);
+        }
+    }
+    return arguments;
+}
+
 std::string readFile(const fs::path& path, size_t limit = 64 * 1024 * 1024) {
     std::ifstream stream(path, std::ios::binary | std::ios::ate);
     if (!stream) throw Failure(L"Не удалось открыть " + path.wstring() + L".");
@@ -843,6 +927,39 @@ bool cacheFlagMatches(const Cache& cache, const wchar_t* name, bool enabled) {
         || equal(value, L"N") || value == L"0";
 }
 
+std::string configureSignature(const BuildSettings& settings, const Cache& cache) {
+    // Record both the requested settings and the resulting flag values. Explicit
+    // -D/-U arguments can override the checkbox; this must not force every build
+    // to reconfigure, while later checkbox/cache changes must still be detected.
+    std::wstring signature = L"CMakeBuild configure arguments v1";
+    for (const auto& value : {settings.cmakeArguments, std::wstring(settings.buildTests ? L"ON" : L"OFF"),
+            cacheValue(cache, L"BUILD_TESTING"), cacheValue(cache, L"BUILD_TESTS")}) {
+        signature.push_back(L'\0');
+        signature += value;
+    }
+    return {reinterpret_cast<const char*>(signature.data()), signature.size() * sizeof(wchar_t)};
+}
+
+bool configureArgumentsMatch(const BuildSettings& settings, const Cache& cache, const fs::path& directory) {
+    const auto marker = directory / L".cmake/cmakebuild-configure-arguments";
+    if (!fileExists(marker)) {
+        // Preserve reuse of trees configured by previous versions of the panel.
+        return settings.cmakeArguments.empty()
+            && cacheFlagMatches(cache, L"BUILD_TESTING", settings.buildTests)
+            && cacheFlagMatches(cache, L"BUILD_TESTS", settings.buildTests);
+    }
+    try { return readFile(marker, 256 * 1024) == configureSignature(settings, cache); }
+    catch (const Failure&) { return false; }
+}
+
+void rememberConfigureArguments(const BuildSettings& settings, const fs::path& directory) {
+    const auto signature = configureSignature(settings, readCache(directory));
+    std::ofstream marker(directory / L".cmake/cmakebuild-configure-arguments", std::ios::binary | std::ios::trunc);
+    marker.write(signature.data(), static_cast<std::streamsize>(signature.size()));
+    marker.close();
+    if (!marker) throw Failure(L"Не удалось сохранить параметры выполненной конфигурации CMake.");
+}
+
 bool cachedConfigurationMatches(const Cache& cache, const std::wstring& configuration) {
     const auto generator = cacheValue(cache, L"CMAKE_GENERATOR");
     if (!contains(generator, L"Visual Studio") && !equal(generator, L"Ninja Multi-Config")
@@ -894,8 +1011,7 @@ bool canReuseConfiguration(const BuildSettings& settings, const Cache& cache,
     if (previousSource.empty() || previousCMake.empty()
         || !samePath(previousSource, source) || !samePath(previousCMake, cmake)
         || fileExists(buildDirectory / L".cmake/cmakebuild-configure-pending")
-        || !cacheFlagMatches(cache, L"BUILD_TESTING", settings.buildTests)
-        || !cacheFlagMatches(cache, L"BUILD_TESTS", settings.buildTests)
+        || !configureArgumentsMatch(settings, cache, buildDirectory)
         || !cachedConfigurationMatches(cache, configuration)
         || !generatedBuildFilesExist(cache, buildDirectory, configuration)) return false;
     try {
@@ -1259,6 +1375,7 @@ struct Engine::Impl {
     std::vector<Target> doBuild(const BuildSettings& settings, bool configureOnly = false) {
         emit(EventKind::Started, configureOnly ? L"Конфигурация CMake запущена." : L"Сборка запущена.");
         checkCancellation();
+        const auto extraArguments = configureArguments(settings.cmakeArguments);
         const fs::path file = absolutePath(settings.cmakeFile);
         if (!equal(file.filename().wstring(), L"CMakeLists.txt") || !fileExists(file)) {
             throw Failure(L"Выберите существующий CMakeLists.txt.", ERROR_FILE_NOT_FOUND);
@@ -1336,7 +1453,8 @@ struct Engine::Impl {
             const std::wstring testSwitch = settings.buildTests ? L"ON" : L"OFF";
             configure.emplace_back(L"-DBUILD_TESTING:BOOL=" + testSwitch);
             configure.emplace_back(L"-DBUILD_TESTS:BOOL=" + testSwitch);
-            log(settings.buildTests ? L"Тестовые цели включены (без запуска тестов)." : L"Тестовые цели выключены.");
+            log(settings.buildTests ? L"BUILD_TESTING и BUILD_TESTS включены (без запуска тестов)."
+                : L"BUILD_TESTING и BUILD_TESTS выключены.");
             if (generator.empty()) {
                 if (!ninja.empty()) {
                     configure.insert(configure.end(), { L"-G", L"Ninja", L"-DCMAKE_MAKE_PROGRAM=" + ninja.wstring() });
@@ -1411,6 +1529,13 @@ struct Engine::Impl {
                 log(L"Qt " + qt.version + L" (" + architecture + L") доступен для CMake: " + qt.prefix.wstring());
             }
             checkCancellation();
+            // Project-specific options follow panel defaults and are passed as
+            // individual process arguments; shell metacharacters remain data.
+            configure.insert(configure.end(), extraArguments.begin(), extraArguments.end());
+            // The Configuration field also controls --config and File API target
+            // selection; keep it authoritative after custom definitions/unsets.
+            configure.emplace_back(L"-DCMAKE_BUILD_TYPE=" + configuration);
+            if (!extraArguments.empty()) log(L"Применяем дополнительные параметры CMake.");
             fs::create_directories(buildDirectory / L".cmake/api/v1/query/client-cmakebuild");
             {
                 std::ofstream query(buildDirectory / L".cmake/api/v1/query/client-cmakebuild/codemodel-v2", std::ios::binary);
@@ -1427,6 +1552,7 @@ struct Engine::Impl {
             auto configured = process(cmake, configure, source, environment);
             checkCancellation();
             if (configured.exitCode) throw Failure(L"CMake configure завершился с кодом " + std::to_wstring(configured.exitCode) + L".", configured.exitCode);
+            rememberConfigureArguments(settings, buildDirectory);
             fs::remove(pending);
         } else {
             log(L"Используем подготовленный каталог сборки: поиск Qt и отдельная конфигурация CMake пропущены.");

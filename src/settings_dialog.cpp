@@ -308,7 +308,7 @@ std::wstring trimmed(std::wstring text) {
 }
 
 SettingsDialog::SettingsDialog(Panel& panel)
-    : Fl_Double_Window(505, 660, "Настройки CMakeBuild"), panel_(panel),
+    : Fl_Double_Window(505, 699, "Настройки CMakeBuild"), panel_(panel),
       settings_(panel.state().settings), chosen_(panel.state().chosenTarget),
       targets_(panel.state().targets) {
     border(0);
@@ -364,9 +364,13 @@ SettingsDialog::SettingsDialog(Panel& panel)
         if (!chosen.empty()) dialog.cmake_->value(platform::utf8(chosen).c_str());
     }, this);
 
-    label("Каталог сборки", 57);
-    directory_ = input(57, fieldWidth - 37, settings_.buildDirectory, "Пусто — build-cmakebuild рядом с проектом");
-    auto* pickDirectory = new RoundedSettingsButton(w() - 48, 57 + settingsHeaderHeight, 30, 26, "…", colors_);
+    label("Параметры CMake", 57);
+    cmakeArguments_ = input(57, fieldWidth, settings_.cmakeArguments,
+        "Дополнительные параметры конфигурации, например -DDESIGNER_BUILD_TESTS=OFF. Пути с пробелами заключайте в двойные кавычки");
+
+    label("Каталог сборки", 96);
+    directory_ = input(96, fieldWidth - 37, settings_.buildDirectory, "Пусто — build-cmakebuild рядом с проектом");
+    auto* pickDirectory = new RoundedSettingsButton(w() - 48, 96 + settingsHeaderHeight, 30, 26, "…", colors_);
     pickDirectory->tooltip("Выбрать каталог сборки");
     pickDirectory->callback([](Fl_Widget*, void* data) {
         auto& dialog = *static_cast<SettingsDialog*>(data);
@@ -374,10 +378,10 @@ SettingsDialog::SettingsDialog(Panel& panel)
         if (!chosen.empty()) dialog.directory_->value(platform::utf8(chosen).c_str());
     }, this);
 
-    label("Конфигурация", 96);
-    configuration_ = input(96, fieldWidth, settings_.configuration, "Release, Debug, RelWithDebInfo или MinSizeRel");
-    label("Компилятор", 135);
-    auto* compilerChoice = new SettingsChoice(inputX, 135 + settingsHeaderHeight, fieldWidth, 26, colors_);
+    label("Конфигурация", 135);
+    configuration_ = input(135, fieldWidth, settings_.configuration, "Release, Debug, RelWithDebInfo или MinSizeRel");
+    label("Компилятор", 174);
+    auto* compilerChoice = new SettingsChoice(inputX, 174 + settingsHeaderHeight, fieldWidth, 26, colors_);
     compiler_ = compilerChoice;
     compiler_->textfont(appFont);
     compiler_->textsize(13);
@@ -385,10 +389,10 @@ SettingsDialog::SettingsDialog(Panel& panel)
     compiler_->value(std::clamp(static_cast<int>(settings_.compiler), 0, 3));
     compilerChoice->refreshTooltip();
 
-    label("Цель сборки", 174);
-    buildTarget_ = input(174, fieldWidth, settings_.target, "Пусто — собрать все цели");
-    label("Цель запуска", 213);
-    auto* runChoice = new SettingsChoice(inputX, 213 + settingsHeaderHeight, fieldWidth, 26, colors_);
+    label("Цель сборки", 213);
+    buildTarget_ = input(213, fieldWidth, settings_.target, "Пусто — собрать все цели");
+    label("Цель запуска", 252);
+    auto* runChoice = new SettingsChoice(inputX, 252 + settingsHeaderHeight, fieldWidth, 26, colors_);
     runTarget_ = runChoice;
     runTarget_->textfont(appFont);
     runTarget_->textsize(13);
@@ -409,14 +413,14 @@ SettingsDialog::SettingsDialog(Panel& panel)
     runTarget_->callback([](Fl_Widget*, void* data) { static_cast<SettingsDialog*>(data)->changeRunTarget(); }, this);
     if (targets_.empty()) runTarget_->deactivate();
 
-    buildTests_ = new SettingsCheckButton(inputX, 252 + settingsHeaderHeight, fieldWidth, 26, "Собирать тесты", colors_);
+    buildTests_ = new SettingsCheckButton(inputX, 291 + settingsHeaderHeight, fieldWidth, 26, "Собирать тесты", colors_);
     buildTests_->value(settings_.buildTests ? 1 : 0);
     buildTests_->tooltip("Добавить тестовые цели в сборку; сами тесты не запускаются");
-    label("Аргументы", 294);
-    arguments_=input(294,fieldWidth,L"","Аргументы запуска; пути с пробелами заключайте в двойные кавычки");
-    label("Рабочая папка", 333);
-    workingDirectory_=input(333,fieldWidth-37,L"","Пусто — папка EXE; относительный путь — от папки проекта");
-    auto* pickWorkingDirectory=new RoundedSettingsButton(w()-48,333+settingsHeaderHeight,30,26,"…",colors_);
+    label("Аргументы", 333);
+    arguments_=input(333,fieldWidth,L"","Аргументы запуска; пути с пробелами заключайте в двойные кавычки");
+    label("Рабочая папка", 372);
+    workingDirectory_=input(372,fieldWidth-37,L"","Пусто — папка EXE; относительный путь — от папки проекта");
+    auto* pickWorkingDirectory=new RoundedSettingsButton(w()-48,372+settingsHeaderHeight,30,26,"…",colors_);
     pickWorkingDirectory->tooltip("Выбрать рабочую папку запуска");
     pickWorkingDirectory->callback([](Fl_Widget*,void* data) {
         auto& dialog=*static_cast<SettingsDialog*>(data);
@@ -424,12 +428,12 @@ SettingsDialog::SettingsDialog(Panel& panel)
         const auto chosen=platform::selectPath(fl_xid(&dialog),true,L"Выберите рабочую папку запуска");
         if(!chosen.empty()) dialog.workingDirectory_->value(platform::utf8(chosen).c_str());
     },this);
-    label("Окружение",372);
-    environment_=input(372,fieldWidth,L"","Переменные запуска: ИМЯ=значение, по одной строке. PATH заменяет автоматически найденные пути");
-    environment_->resize(inputX,372+settingsHeaderHeight,fieldWidth,78);
+    label("Окружение",411);
+    environment_=input(411,fieldWidth,L"","Переменные запуска: ИМЯ=значение, по одной строке. PATH заменяет автоматически найденные пути");
+    environment_->resize(inputX,411+settingsHeaderHeight,fieldWidth,78);
     environment_->type(FL_MULTILINE_INPUT);
     loadRunDraft();
-    tools_ = new SettingsToolsDisplay(18, 464 + settingsHeaderHeight, w() - 36, 76, colors_);
+    tools_ = new SettingsToolsDisplay(18, 503 + settingsHeaderHeight, w() - 36, 76, colors_);
     tools_->box(FL_BORDER_BOX);
     tools_->textsize(13);
     tools_->textfont(appFont);
@@ -565,6 +569,7 @@ void SettingsDialog::apply() {
     captureRunDraft();
     if(!validateRunDrafts()) return;
     settings_.cmakeExecutable = platform::utf16(cmake_->value());
+    settings_.cmakeArguments = platform::utf16(cmakeArguments_->value());
     settings_.buildDirectory = platform::utf16(directory_->value());
     settings_.configuration = configuration;
     settings_.compiler = static_cast<CompilerMode>(std::clamp(compiler_->value(), 0, 3));
@@ -600,7 +605,7 @@ void SettingsDialog::setTheme(bool dark) {
     };
     palette(palette, *this);
     styleScrollbars(*this, colors_);
-    for (auto* input : {cmake_, directory_, configuration_, buildTarget_, arguments_, workingDirectory_, environment_}) {
+    for (auto* input : {cmake_, cmakeArguments_, directory_, configuration_, buildTarget_, arguments_, workingDirectory_, environment_}) {
         input->color(colors_.surface);
         input->textcolor(colors_.text);
         input->cursor_color(colors_.text);

@@ -131,6 +131,7 @@ public:
     ~SettingsDialog() override;
     void show() override;
     Fl_Input& configurationInput() { return *configuration_; }
+    Fl_Input& cmakeArgumentsInput() { return *cmakeArguments_; }
     Fl_Choice& runChoice() { return *runTarget_; }
     Fl_Input& argumentsInput() { return *arguments_; }
     Fl_Input& workingDirectoryInput() { return *workingDirectory_; }
@@ -162,7 +163,7 @@ private:
     bool nativeDragging_ = false;
     int dragX_ = 0, dragY_ = 0, mouseX_ = 0, mouseY_ = 0;
     Fl_Button* closeButton_{};
-    Fl_Input *cmake_{}, *directory_{}, *configuration_{}, *buildTarget_{};
+    Fl_Input *cmake_{}, *cmakeArguments_{}, *directory_{}, *configuration_{}, *buildTarget_{};
     Fl_Input *arguments_{}, *workingDirectory_{}, *environment_{};
     Fl_Choice *compiler_{}, *runTarget_{};
     Fl_Check_Button* buildTests_{};

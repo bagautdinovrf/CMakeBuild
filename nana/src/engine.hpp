@@ -26,6 +26,8 @@ struct BuildSettings {
     std::wstring cmakeFile;
     std::wstring buildDirectory;
     std::wstring cmakeExecutable;
+    // Additional configure arguments, using Windows command-line quoting.
+    std::wstring cmakeArguments;
     std::wstring configuration = L"Release";
     CompilerMode compiler = CompilerMode::Automatic;
     std::wstring target;

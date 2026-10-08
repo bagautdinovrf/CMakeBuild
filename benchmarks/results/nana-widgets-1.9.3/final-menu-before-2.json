@@ -1,0 +1,8 @@
+{
+  "benchmark": "menu_hover",
+  "items": 24,
+  "caption_length": 72,
+  "iterations": 2000,
+  "frames": 2000,
+  "milliseconds": 2434.08
+}

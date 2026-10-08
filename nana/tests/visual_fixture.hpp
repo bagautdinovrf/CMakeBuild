@@ -10,7 +10,7 @@ namespace harness::visual {
 inline constexpr std::array scales{1.0, 1.25, 1.5, 2.0};
 inline constexpr std::array percentages{100, 125, 150, 200};
 inline constexpr int panelWidth = 500, compactHeight = 150, journalHeight = 365;
-inline constexpr int settingsWidth = 505, settingsHeight = 660;
+inline constexpr int settingsWidth = 505, settingsHeight = 699;
 inline constexpr std::wstring_view projectFile = L"C:\\GitRepos\\Демонстрационный проект\\CMakeLists.txt";
 inline constexpr std::wstring_view buildDirectory = L"build-release", configuration = L"Release";
 inline constexpr std::array targetNames{L"ExampleApp", L"ExampleTool"};

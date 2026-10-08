@@ -568,6 +568,7 @@ void checkLegacySettings(const fs::path& root, const ProjectFixture& first) {
     setting(L"Executable", first.targets.back().executable);
     setting(L"BuildTests", L"1");
     setting(L"CMake", L"C:\\legacy tools\\cmake.exe");
+    setting(L"CMakeArguments", L"-DDESIGNER_BUILD_TESTS=OFF");
     setting(L"Compiler", L"2");
     setting(L"BuildTarget", L"legacy build target");
     setting(L"Pinned", L"0");
@@ -582,6 +583,7 @@ void checkLegacySettings(const fs::path& root, const ProjectFixture& first) {
         require(legacy.app.chosenTarget == first.targets.back().name
             && legacy.app.settings.buildTests && legacy.app.logVisible && legacy.app.logHeight == 480
             && legacy.app.settings.cmakeExecutable == L"C:\\legacy tools\\cmake.exe"
+            && legacy.app.settings.cmakeArguments == L"-DDESIGNER_BUILD_TESTS=OFF"
             && legacy.app.settings.compiler == cb::CompilerMode::Mingw
             && legacy.app.settings.target == L"legacy build target",
             L"FLTK panel must load existing global Panel keys without losing values");
@@ -603,6 +605,7 @@ void checkLegacySettings(const fs::path& root, const ProjectFixture& first) {
         && std::string_view(restarted.panel.button(cb::Control::Build).label()) == "Собрать и запустить"
         && restarted.app.chosenTarget == first.targets.back().name && restarted.app.settings.buildTests
         && restarted.app.settings.cmakeExecutable == L"C:\\legacy tools\\cmake.exe"
+        && restarted.app.settings.cmakeArguments == L"-DDESIGNER_BUILD_TESTS=OFF"
         && restarted.app.settings.compiler == cb::CompilerMode::Mingw
         && restarted.app.settings.target == L"legacy build target",
         L"Legacy global build and launch settings must migrate into a durable complete project profile");
@@ -825,9 +828,83 @@ void waitUntil(const std::function<bool()>& condition, const wchar_t* message) {
 void requireProfile(const cb::BuildSettings& actual, const cb::BuildSettings& expected) {
     require(actual.cmakeFile == expected.cmakeFile && actual.buildDirectory == expected.buildDirectory
         && actual.cmakeExecutable == expected.cmakeExecutable && actual.configuration == expected.configuration
+        && actual.cmakeArguments == expected.cmakeArguments
         && actual.compiler == expected.compiler && actual.target == expected.target
         && actual.buildTests == expected.buildTests && !actual.cleanFirst,
         L"Switching and restarting must retain every saved project setting without transient clean-first");
+}
+
+void checkCMakeArgumentsSettings(const fs::path& root) {
+    const auto directory = root / L"CMake arguments settings";
+    const ProjectFixture project(directory, L"project", L"build", L"Release", L"First", L"Second",
+        L"run-fixture-cmake-first.exe", L"run-fixture-cmake-second.exe");
+    const auto ini = directory / L"settings.ini";
+    seedProject(ini, project);
+    const std::wstring original = L"-DDESIGNER_BUILD_TESTS=OFF";
+    const std::wstring edited = L"  \"-DRESOURCE_DIR=C:\\русская папка 😀\\data\" -DDESIGNER_BUILD_TESTS=OFF  ";
+    {
+        HiddenPanel hidden(ini);
+        hidden.app.settings.cmakeArguments = original;
+        hidden.panel.save();
+        cb::SettingsDialog dialog(hidden.panel);
+        auto& input = dialog.cmakeArgumentsInput();
+        require(cb::platform::utf16(input.value()) == original && input.type() == FL_NORMAL_INPUT
+            && input.textfont() == cb::appFont && input.active(),
+            L"CMake arguments must appear in an active single-line Settings field");
+        require(input.tooltip() && std::string_view(input.tooltip()).find("-DDESIGNER_BUILD_TESTS=OFF") != std::string_view::npos,
+            L"CMake arguments must offer a project-specific option example");
+        input.value(utf8(edited).c_str());
+        input.insert_position(2, 14);
+        Fl::focus(&input);
+        const int x = input.x(), y = input.y(), width = input.w(), height = input.h();
+        const int cursor = input.insert_position(), mark = input.mark();
+        const auto font = input.textfont();
+        dialog.setTheme(true);
+        dialog.setTheme(false);
+        require(cb::platform::utf16(input.value()) == edited && input.insert_position() == cursor && input.mark() == mark
+            && Fl::focus() == &input && input.textfont() == font
+            && input.x() == x && input.y() == y && input.w() == width && input.h() == height,
+            L"Theme changes must retain exact CMake text, cursor, selection, font and field geometry");
+        Fl::focus(nullptr);
+        dialog.apply();
+        require(dialog.accepted() && dialog.settingsValue().cmakeArguments == edited
+            && hidden.app.settings.cmakeArguments == original,
+            L"Accepting Settings must return exact CMake arguments without committing before the panel applies them");
+        hidden.panel.applySettings(dialog.settingsValue(), dialog.chosenTarget(), dialog.selectionChanged());
+        cb::AppState saved(ini.wstring());
+        saved.load();
+        require(saved.settings.cmakeArguments == edited,
+            L"Saved CMake arguments must retain whitespace, quotes, Unicode and paths through an INI round-trip");
+        cb::SettingsDialog cancelled(hidden.panel);
+        cancelled.cmakeArgumentsInput().value("-DDESIGNER_BUILD_TESTS=ON");
+        require(sendKey(cancelled, FL_Escape) && !cancelled.accepted(), L"Escape must cancel CMake argument edits");
+        saved.load();
+        require(hidden.app.settings.cmakeArguments == edited && saved.settings.cmakeArguments == edited,
+            L"Cancelling CMake argument edits must preserve the active and persisted profile");
+    }
+    const auto section = cb::platform::projectSection(project.project.wstring());
+    require(WritePrivateProfileStringW(section.c_str(), L"CMakeArgumentsChunks", nullptr, ini.c_str()) != FALSE,
+        L"Cannot remove a project argument marker for the startup fallback check");
+    cb::AppState inherited(ini.wstring());
+    inherited.load();
+    require(inherited.settings.cmakeArguments == edited,
+        L"A legacy project section without CMake argument keys must inherit the active Panel value on startup");
+    require(WritePrivateProfileStringW(section.c_str(), L"CMakeArgumentsChunks", L"0", ini.c_str()) != FALSE,
+        L"Cannot seed an explicitly empty project argument field");
+    inherited.load();
+    require(inherited.settings.cmakeArguments.empty(),
+        L"An explicitly empty project CMake field must override nonempty Panel arguments");
+    inherited.settings.cmakeArguments = L"\"-DRESOURCE_DIR=C:\\папка с пробелами\\\"";
+    inherited.save();
+    cb::AppState quoted(ini.wstring());
+    quoted.load();
+    require(quoted.settings.cmakeArguments == inherited.settings.cmakeArguments,
+        L"Surrounding quotes in CMake arguments must survive Windows profile API quote stripping");
+    quoted.settings.cmakeArguments.clear();
+    quoted.save();
+    inherited.load();
+    require(inherited.settings.cmakeArguments.empty(),
+        L"Clearing CMake arguments must persist an empty value instead of reviving stale chunks");
 }
 
 void requireRunSettings(const cb::RunSettings& actual, const cb::RunSettings& expected) {
@@ -920,11 +997,14 @@ void checkCompleteProfilesAndRecentProjects(const fs::path& root) {
         L"Other", L"Extra", L"run-fixture-profile-other.exe", L"run-fixture-profile-extra.exe");
     auto firstSettings = first.settings();
     firstSettings.cmakeExecutable = L"C:\\Tools with spaces\\cmake-one.exe";
+    firstSettings.cmakeArguments = L"  -DDESIGNER_BUILD_TESTS=OFF \"-DRESOURCE_DIR=C:\\русская папка 😀\" -DLONG="
+        + std::wstring(10000, L'я') + L"  ";
     firstSettings.compiler = cb::CompilerMode::Msvc;
     firstSettings.target = L"First & build";
     firstSettings.buildTests = true;
     auto secondSettings = second.settings();
     secondSettings.cmakeExecutable = L"C:\\другие инструменты\\cmake-two.exe";
+    secondSettings.cmakeArguments = L"-DSECOND_PROJECT=ON";
     secondSettings.compiler = cb::CompilerMode::Mingw;
     secondSettings.target = L"Other build";
     const cb::RunSettings firstRun{L"  \"русский аргумент\" --name=\"quoted value\" " + std::wstring(10000, L'я') + L"  ", L"..\\рабочая папка",
@@ -993,6 +1073,7 @@ void checkCompleteProfilesAndRecentProjects(const fs::path& root) {
             writeFile(project, "cmake_minimum_required(VERSION 3.24)\nproject(Recent LANGUAGES NONE)\n");
             restarted.panel.selectProject(project.wstring());
             require(restarted.app.settings.buildDirectory.empty() && restarted.app.settings.target.empty()
+                && restarted.app.settings.cmakeArguments.empty()
                 && restarted.app.settings.configuration == L"Release" && !restarted.app.settings.buildTests
                 && restarted.app.settings.compiler == cb::CompilerMode::Automatic,
                 L"New projects must receive defaults instead of another project's build profile");
@@ -1838,6 +1919,7 @@ int wmain(int argc, wchar_t** argv) {
         checkLiteralMenuAndExpiredTargets(temporary.root);
         checkRuns(ini, first, second);
         checkCompleteProfilesAndRecentProjects(temporary.root);
+        checkCMakeArgumentsSettings(temporary.root);
         checkLaunchSettingsDialog(temporary.root);
         checkConfiguredLaunch(temporary.root);
         checkBuildAndRun(temporary.root);

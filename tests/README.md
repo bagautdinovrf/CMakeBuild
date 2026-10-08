@@ -50,6 +50,23 @@ cover both standard `BUILD_TESTING` through `include(CTest)` and project-specifi
 tests enabled must fail at the deliberate `#error`, proving that the broken test
 sources would otherwise stop the build.
 
+An additional fixture reproduces a project-specific `DESIGNER_BUILD_TESTS=ON`
+option that ignores both standard switches. Its deliberately broken test must
+fail without an explicit override and disappear after passing
+`-DDESIGNER_BUILD_TESTS=OFF` through `BuildSettings::cmakeArguments`. Real cache
+and generated-file checks cover quoted spaces, Unicode, literal quotes, trailing
+backslashes, and shell metacharacters. Fresh Engine instances must reuse unchanged
+arguments, reconfigure changed or cleared arguments, and honor explicit `-D`/`-U`
+overrides without repeatedly configuring because they differ from the checkbox.
+Standalone configure accepts the same arguments without compiling targets. The
+harness also rejects CMake operation, generator, and source/build directory
+overrides before creating a build directory or launching any process.
+This includes mode/help tokens consumed as option values and reserved toolchain
+or build-tree cache definitions in joined, separate, and typed `-D` forms. Invalid
+quotes, controls, missing values, and oversized strings also fail before side
+effects. Explicit `CMAKE_BUILD_TYPE` definitions and unsets cannot replace the
+panel configuration field; repeating them still reuses the configured tree.
+
 The MSVC suite additionally holds a real executable image lock using a suspended
 test-owned process, changes its source, and verifies the `LNK1168` failure explains
 that the running application must be closed. It then releases the lock and
