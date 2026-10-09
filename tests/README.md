@@ -3,8 +3,10 @@
 The standalone harness uses the public `Engine` API and creates disposable CMake
 projects under `%TEMP%`. It does not read or write panel settings or existing
 projects. Qt is required only by the generated fixtures; the harness has no Qt
-dependency. Use Windows, CMake 3.24+, C++23, MSVC, and/or MinGW matching a native
-Qt 6.11+ kit. The build-option suites use plain C++23 fixtures and do not
+dependency. Use Windows, CMake 3.24+, MSVC, and/or MinGW matching a native
+Qt 6.11+ kit. Select the newest C++ dialect: MSVC `/std:c++latest`, or the highest
+standard supported by the compiler and known to CMake, at least C++23.
+The build-option suites use plain C++ fixtures and do not
 require Qt.
 
 Build once, then run both compiler suites:

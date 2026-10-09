@@ -338,7 +338,15 @@ void checkSuccessfulBuild(const fs::path& root) {
     const auto ini = directory / L"settings.ini";
     writeFile(project,
         "cmake_minimum_required(VERSION 3.24)\nproject(ControllerBridge LANGUAGES CXX)\n"
-        "set(CMAKE_CXX_STANDARD 23)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
+        "if(MSVC)\n  set(CMAKE_CXX_STANDARD 23)\n"
+        "  add_compile_options(\"$<$<COMPILE_LANGUAGE:CXX>:/std:c++latest>\")\nelse()\n"
+        "  set(fixture_cxx_standards ${CMAKE_CXX_COMPILE_FEATURES})\n"
+        "  list(FILTER fixture_cxx_standards INCLUDE REGEX \"^cxx_std_[0-9]+$\")\n"
+        "  list(REMOVE_ITEM fixture_cxx_standards cxx_std_98)\n"
+        "  list(SORT fixture_cxx_standards COMPARE NATURAL)\n"
+        "  list(GET fixture_cxx_standards -1 fixture_latest_cxx)\n"
+        "  string(REPLACE \"cxx_std_\" \"\" CMAKE_CXX_STANDARD \"${fixture_latest_cxx}\")\n"
+        "endif()\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n"
         "add_executable(BridgeHello hello.cpp)\nadd_executable(BridgeTool tool.cpp)\n"
         "if(MSVC)\n  target_compile_options(BridgeHello PRIVATE /utf-8)\nendif()\n");
     const std::string helloSource = "#include <iostream>\n#include <fstream>\n#include <filesystem>\n#include <cstdlib>\nint main(int argc, char** argv) { std::cout << \"Настоящая сборка и запуск UTF-8\\n\"; if(argc>1) std::cout << argv[1] << '\\n'; if(auto* v=std::getenv(\"CB_VARIANT_VALUE\")) std::cout << v << '\\n'; const auto d=std::filesystem::current_path().generic_u8string(); std::cout.write(reinterpret_cast<const char*>(d.data()), static_cast<std::streamsize>(d.size())); std::cout << '\\n'; std::ofstream(\"bridge.launched\") << \"ran\"; }\n";

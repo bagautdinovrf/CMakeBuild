@@ -1,0 +1,17 @@
+# Use the newest dialect supported by both the compiler and this CMake.
+if(MSVC)
+    # CMake 3.30 models /std:c++latest as CXX23; own targets also set the flag.
+    set(CMAKE_CXX_STANDARD 23)
+else()
+    set(cmakebuild_cxx_standards ${CMAKE_CXX_COMPILE_FEATURES})
+    list(FILTER cmakebuild_cxx_standards INCLUDE REGEX "^cxx_std_[0-9]+$")
+    list(REMOVE_ITEM cmakebuild_cxx_standards cxx_std_98)
+    list(SORT cmakebuild_cxx_standards COMPARE NATURAL)
+    list(GET cmakebuild_cxx_standards -1 cmakebuild_latest_cxx)
+    string(REPLACE "cxx_std_" "" CMAKE_CXX_STANDARD "${cmakebuild_latest_cxx}")
+    if(CMAKE_CXX_STANDARD LESS 23)
+        message(FATAL_ERROR "CMakeBuild requires a compiler and CMake with C++23 or newer support.")
+    endif()
+endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)

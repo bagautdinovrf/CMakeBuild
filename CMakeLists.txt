@@ -19,9 +19,7 @@ if(NOT WIN32)
     message(FATAL_ERROR "CMakeBuild is a native Windows application.")
 endif()
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
+include(cmake/cxx_standard.cmake)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 include(cmake/fltk.cmake)
@@ -78,7 +76,7 @@ add_custom_target(CMakeBuildPublish ALL
 
 if(MSVC)
     target_compile_options(CMakeBuild PRIVATE
-        "$<$<COMPILE_LANGUAGE:CXX>:/W4;/permissive-;/utf-8;/Zc:__cplusplus>"
+        "$<$<COMPILE_LANGUAGE:CXX>:/std:c++latest;/W4;/permissive-;/utf-8;/Zc:__cplusplus>"
         "$<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/O2>"
     )
     # The manifest is already in app.rc; prevent a second manifest resource.

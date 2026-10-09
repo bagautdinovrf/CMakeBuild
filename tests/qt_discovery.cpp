@@ -217,7 +217,15 @@ Fixture project(const fs::path& root, std::string_view name, bool qt, bool dynam
         bool externalOutput = false) {
     Fixture fixture{root / pathUtf8(name) / L"source", root / pathUtf8(name) / L"build"};
     std::string cmake = "cmake_minimum_required(VERSION 3.24)\nproject(EngineFixture LANGUAGES CXX)\n"
-        "set(CMAKE_CXX_STANDARD 23)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n";
+        "if(MSVC)\n  set(CMAKE_CXX_STANDARD 23)\n"
+        "  add_compile_options(\"$<$<COMPILE_LANGUAGE:CXX>:/std:c++latest>\")\nelse()\n"
+        "  set(fixture_cxx_standards ${CMAKE_CXX_COMPILE_FEATURES})\n"
+        "  list(FILTER fixture_cxx_standards INCLUDE REGEX \"^cxx_std_[0-9]+$\")\n"
+        "  list(REMOVE_ITEM fixture_cxx_standards cxx_std_98)\n"
+        "  list(SORT fixture_cxx_standards COMPARE NATURAL)\n"
+        "  list(GET fixture_cxx_standards -1 fixture_latest_cxx)\n"
+        "  string(REPLACE \"cxx_std_\" \"\" CMAKE_CXX_STANDARD \"${fixture_latest_cxx}\")\n"
+        "endif()\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n";
     if (qt) {
         cmake += "include(cmake/Dependency.cmake)\n";
         write(fixture.source / L"cmake/Dependency.cmake", dynamic

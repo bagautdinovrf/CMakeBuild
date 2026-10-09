@@ -1,6 +1,6 @@
 # CMakeBuild Nana
 
-Перед изменениями читать этот файл и README.md. Использовать C++23; NanaPlus — зафиксированный commit форка bagautdinovrf/nanaplus из cmake/nana.cmake, основанный на официальной Nana develop-1.8. Не заменять Nana на другой toolkit и не вводить динамические зависимости. Библиотечные расширения поддерживать в форке, не возвращать текстовые CMake-патчи зависимости.
+Перед изменениями читать этот файл и README.md. Использовать самый новый поддерживаемый диалект C++: MSVC `/std:c++latest`, для остальных компиляторов — максимальный стандарт, доступный компилятору и известный установленному CMake. Метаданные CXX23 для MSVC обеспечивают совместимость с CMake 3.30 и не ограничивают явный `/std:c++latest`. NanaPlus — зафиксированный commit форка bagautdinovrf/nanaplus из cmake/nana.cmake, основанный на официальной Nana develop-1.8. Не заменять Nana на другой toolkit и не вводить динамические зависимости. Библиотечные расширения поддерживать в форке, не возвращать текстовые CMake-патчи зависимости.
 
 Готовая программа всегда находится в `C:\GitRepos\CmakeBuild\nana\CMakeBuild.exe`. Обычная сборка из этой папки: `powershell -ExecutionPolicy Bypass -File .\build.ps1 -Toolchain MSVC -Configuration Release`. Кэши: `build/msvc`, `build/mingw-release`, `build/mingw-debug`; публикующая цель — CMakeBuildPublish. Все сборки вариантов проводить последовательно.
 
