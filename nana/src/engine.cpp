@@ -1682,6 +1682,7 @@ struct Engine::Impl {
                 static_cast<unsigned>(time.wDay), static_cast<unsigned>(time.wHour),
                 static_cast<unsigned>(time.wMinute), static_cast<unsigned>(time.wSecond));
             log(std::wstring(label) + timestamp);
+            return std::wstring(timestamp);
         };
         try {
             if (!cleaning && !configuring) logBuildTime(L"Начало сборки: ");
@@ -1707,7 +1708,13 @@ struct Engine::Impl {
         active.store(false);
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
-        if (!cleaning && !configuring) logBuildTime(L"Окончание сборки: ");
+        if (!cleaning && !configuring) {
+            const auto finishedAt = logBuildTime(L"Окончание сборки: ");
+            if (result.kind == EventKind::BuildSucceeded)
+                result.text = L"Сборка завершена · " + finishedAt;
+            else
+                result.text += L" · Окончание сборки: " + finishedAt;
+        }
         emit(result.kind, std::move(result.text), std::move(result.targets), result.exitCode, duration);
     }
 
