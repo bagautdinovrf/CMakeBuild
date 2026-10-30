@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <cwchar>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -1672,7 +1673,18 @@ struct Engine::Impl {
         Event result{ cleaning ? EventKind::CleanSucceeded
                 : configuring ? EventKind::ConfigureSucceeded : EventKind::BuildSucceeded,
             cleaning ? L"Очистка завершена." : configuring ? L"Конфигурация CMake завершена." : L"Сборка завершена.", {} };
+        const auto logBuildTime = [this](const wchar_t* label) {
+            SYSTEMTIME time{};
+            GetLocalTime(&time);
+            wchar_t timestamp[32]{};
+            std::swprintf(timestamp, std::size(timestamp), L"%04u-%02u-%02u %02u:%02u:%02u",
+                static_cast<unsigned>(time.wYear), static_cast<unsigned>(time.wMonth),
+                static_cast<unsigned>(time.wDay), static_cast<unsigned>(time.wHour),
+                static_cast<unsigned>(time.wMinute), static_cast<unsigned>(time.wSecond));
+            log(std::wstring(label) + timestamp);
+        };
         try {
+            if (!cleaning && !configuring) logBuildTime(L"Начало сборки: ");
             if (cleaning) doClean(settings);
             else result.targets = doBuild(settings, configuring);
         }
@@ -1695,6 +1707,7 @@ struct Engine::Impl {
         active.store(false);
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started);
+        if (!cleaning && !configuring) logBuildTime(L"Окончание сборки: ");
         emit(result.kind, std::move(result.text), std::move(result.targets), result.exitCode, duration);
     }
 

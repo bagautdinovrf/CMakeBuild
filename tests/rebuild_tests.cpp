@@ -154,6 +154,15 @@ public:
             } else require(!event.buildDuration, "Nonterminal event reported rebuild duration.");
         }
         require(terminalCount == 1, "Rebuild emitted more than one completion event.");
+        const auto buildFinished = std::ranges::any_of(events_, [](const auto& event) {
+            return event.kind == cb::EventKind::BuildSucceeded || event.kind == cb::EventKind::BuildFailed;
+        });
+        if (buildFinished) {
+            require(!events_.empty() && events_.front().kind == cb::EventKind::Log
+                && events_.front().text.starts_with(L"Начало сборки: "), "Missing build start timestamp.");
+            require(events_.size() >= 2 && events_[events_.size()-2].kind == cb::EventKind::Log
+                && events_[events_.size()-2].text.starts_with(L"Окончание сборки: "), "Missing build end timestamp.");
+        }
     }
     void dump() {
         std::lock_guard lock(mutex_);
