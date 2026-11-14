@@ -3,8 +3,8 @@ param(
     [string] $OutputDirectory
 )
 
-# The geometry and colors mirror assets/app.svg. This script regenerates the
-# committed ICO and preview with Windows' built-in System.Drawing only.
+# The application icon mirrors assets/app.svg. Both icons are generated using
+# Windows' built-in System.Drawing only.
 $ErrorActionPreference = 'Stop'
 if (!$OutputDirectory) { $OutputDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) 'assets' }
 Add-Type -AssemblyName System.Drawing
@@ -83,32 +83,70 @@ function New-IconPng([int] $Size) {
     }
 }
 
+function New-BuildSucceededPng([int] $Size) {
+    $taskBitmap = [System.Drawing.Bitmap]::new($Size, $Size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $taskGraphics = [System.Drawing.Graphics]::FromImage($taskBitmap)
+    $taskStream = [System.IO.MemoryStream]::new()
+    $taskGreen = [System.Drawing.SolidBrush]::new([System.Drawing.ColorTranslator]::FromHtml('#087849'))
+    $taskCheck = [System.Drawing.Pen]::new([System.Drawing.Color]::White, 1.8)
+    try {
+        $taskGraphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $taskScale = [single] ($Size / 16.0)
+        $taskGraphics.ScaleTransform($taskScale, $taskScale)
+        $taskGraphics.FillEllipse([System.Drawing.Brushes]::White, 0, 0, 16, 16)
+        $taskGraphics.FillEllipse($taskGreen, 0.8, 0.8, 14.4, 14.4)
+        $taskCheck.StartCap = $taskCheck.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+        $taskCheck.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
+        $taskGraphics.DrawLines($taskCheck, [System.Drawing.PointF[]] @(
+            [System.Drawing.PointF]::new(4.5, 8.2),
+            [System.Drawing.PointF]::new(7, 10.6),
+            [System.Drawing.PointF]::new(11.6, 5.6)))
+        $taskBitmap.Save($taskStream, [System.Drawing.Imaging.ImageFormat]::Png)
+        return ,$taskStream.ToArray()
+    } finally {
+        $taskCheck.Dispose()
+        $taskGreen.Dispose()
+        $taskGraphics.Dispose()
+        $taskBitmap.Dispose()
+        $taskStream.Dispose()
+    }
+}
+
+function Write-Icon([string] $Name, [int[]] $Sizes, [object[]] $Pngs) {
+    $taskIconPath = Join-Path $OutputDirectory $Name
+    $taskIconStream = [System.IO.File]::Create($taskIconPath)
+    $taskWriter = [System.IO.BinaryWriter]::new($taskIconStream)
+    try {
+        $taskWriter.Write([uint16] 0)
+        $taskWriter.Write([uint16] 1)
+        $taskWriter.Write([uint16] $Sizes.Length)
+        $taskOffset = [uint32] (6 + 16 * $Sizes.Length)
+        for ($taskIndex = 0; $taskIndex -lt $Sizes.Length; ++$taskIndex) {
+            $taskSizeByte = if ($Sizes[$taskIndex] -eq 256) { [byte] 0 } else { [byte] $Sizes[$taskIndex] }
+            $taskWriter.Write($taskSizeByte)
+            $taskWriter.Write($taskSizeByte)
+            $taskWriter.Write([byte] 0)
+            $taskWriter.Write([byte] 0)
+            $taskWriter.Write([uint16] 1)
+            $taskWriter.Write([uint16] 32)
+            $taskWriter.Write([uint32] $Pngs[$taskIndex].Length)
+            $taskWriter.Write($taskOffset)
+            $taskOffset += $Pngs[$taskIndex].Length
+        }
+        foreach ($taskPng in $Pngs) { $taskWriter.Write([byte[]] $taskPng) }
+    } finally {
+        $taskWriter.Dispose()
+        $taskIconStream.Dispose()
+    }
+    Write-Output "Generated $taskIconPath with sizes $($Sizes -join ', ')."
+}
+
 $taskPngs = @()
 foreach ($taskSize in $taskIconSizes) { $taskPngs += ,(New-IconPng $taskSize) }
-$taskIconPath = Join-Path $OutputDirectory 'app.ico'
-$taskIconStream = [System.IO.File]::Create($taskIconPath)
-$taskWriter = [System.IO.BinaryWriter]::new($taskIconStream)
-try {
-    $taskWriter.Write([uint16] 0)
-    $taskWriter.Write([uint16] 1)
-    $taskWriter.Write([uint16] $taskIconSizes.Length)
-    $taskOffset = [uint32] (6 + 16 * $taskIconSizes.Length)
-    for ($taskIndex = 0; $taskIndex -lt $taskIconSizes.Length; ++$taskIndex) {
-        $taskSizeByte = if ($taskIconSizes[$taskIndex] -eq 256) { [byte] 0 } else { [byte] $taskIconSizes[$taskIndex] }
-        $taskWriter.Write($taskSizeByte)
-        $taskWriter.Write($taskSizeByte)
-        $taskWriter.Write([byte] 0)
-        $taskWriter.Write([byte] 0)
-        $taskWriter.Write([uint16] 1)
-        $taskWriter.Write([uint16] 32)
-        $taskWriter.Write([uint32] $taskPngs[$taskIndex].Length)
-        $taskWriter.Write($taskOffset)
-        $taskOffset += $taskPngs[$taskIndex].Length
-    }
-    foreach ($taskPng in $taskPngs) { $taskWriter.Write([byte[]] $taskPng) }
-} finally {
-    $taskWriter.Dispose()
-    $taskIconStream.Dispose()
-}
+Write-Icon 'app.ico' $taskIconSizes $taskPngs
 [System.IO.File]::WriteAllBytes((Join-Path $OutputDirectory 'app-preview.png'), $taskPngs[-1])
-Write-Output "Generated $taskIconPath with sizes $($taskIconSizes -join ', ')."
+
+$taskOverlaySizes = @(16, 20, 24, 32, 40, 48)
+$taskOverlayPngs = @()
+foreach ($taskSize in $taskOverlaySizes) { $taskOverlayPngs += ,(New-BuildSucceededPng $taskSize) }
+Write-Icon 'build-succeeded.ico' $taskOverlaySizes $taskOverlayPngs

@@ -52,6 +52,7 @@ public:
     bool runSelectionRequested() const noexcept { return runSelectionRequested_; }
     void dismissRunSelectionRequest() noexcept { runSelectionRequested_ = false; }
     std::optional<BuildProgress> buildProgress() const noexcept { return buildProgress_; }
+    bool buildSucceeded() const noexcept { return buildSucceeded_; }
     std::optional<std::chrono::milliseconds> lastBuildDuration() const noexcept { return lastBuildDuration_; }
     std::wstring durationText() const;
     Journal& journal() noexcept { return journal_; }
@@ -87,6 +88,7 @@ private:
     BuildAction durationAction_ = BuildAction::Build;
     bool cancelling_ = false, runAfterBuild_ = false, runSelectionRequested_ = false;
     std::optional<BuildProgress> buildProgress_;
+    bool buildSucceeded_ = false;
     std::optional<std::chrono::milliseconds> lastBuildDuration_;
     std::wstring status_;
     void recordDuration(const Event&);

@@ -198,10 +198,13 @@ void configurePanelWindow(void* nativeHandle) {
     // application's main window and must remain available in the taskbar and
     // Alt+Tab while its FLTK controls provide the title and resize handles.
     const LONG_PTR extended = GetWindowLongPtrW(window, GWL_EXSTYLE);
-    SetWindowLongPtrW(window, GWL_EXSTYLE, (extended & ~static_cast<LONG_PTR>(WS_EX_TOOLWINDOW)) | WS_EX_APPWINDOW);
+    const LONG_PTR taskbarStyle = (extended & ~static_cast<LONG_PTR>(WS_EX_TOOLWINDOW)) | WS_EX_APPWINDOW;
     const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-    const LONG_PTR borderless = style & ~static_cast<LONG_PTR>(WS_CAPTION | WS_THICKFRAME);
-    SetWindowLongPtrW(window, GWL_STYLE, borderless | WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX);
+    const LONG_PTR panelStyle = (style & ~static_cast<LONG_PTR>(WS_CAPTION | WS_THICKFRAME))
+        | WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX;
+    if (taskbarStyle == extended && panelStyle == style) return;
+    SetWindowLongPtrW(window, GWL_EXSTYLE, taskbarStyle);
+    SetWindowLongPtrW(window, GWL_STYLE, panelStyle);
     SetWindowPos(window, nullptr, 0, 0, 0, 0,
         SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     setApplicationIcon(nativeHandle);

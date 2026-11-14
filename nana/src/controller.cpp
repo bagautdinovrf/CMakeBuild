@@ -142,6 +142,7 @@ void Controller::onEvent(Event event) {
         operation_ = Operation::Idle;
         cancelling_ = false;
         buildProgress_.reset();
+        buildSucceeded_ = true;
         if (!event.targets.empty()) state_.targets = std::move(event.targets);
         std::erase_if(state_.targets, [](const Target& target) { return !executableExists(target); });
         if (state_.chosenTarget.empty() && state_.targets.size() == 1) state_.selectRunTarget(0);
@@ -165,6 +166,7 @@ void Controller::onEvent(Event event) {
         operation_ = Operation::Idle;
         cancelling_ = runAfterBuild_ = false;
         buildProgress_.reset();
+        buildSucceeded_ = false;
         state_.targets = event.kind == EventKind::CleanSucceeded ? std::vector<Target>{} : std::move(event.targets);
         std::erase_if(state_.targets, [](const Target& target) { return !executableExists(target); });
         if (state_.chosenTarget.empty() && state_.targets.size() == 1) state_.selectRunTarget(0);
@@ -177,6 +179,7 @@ void Controller::onEvent(Event event) {
         operation_ = Operation::Idle;
         cancelling_ = runAfterBuild_ = false;
         buildProgress_.reset();
+        buildSucceeded_ = false;
         status_ = event.text.empty() ? event.kind == EventKind::CleanFailed ? L"Очистка завершилась с ошибкой"
             : event.kind == EventKind::ConfigureFailed ? L"CMake завершился с ошибкой" : L"Сборка завершилась с ошибкой" : std::move(event.text);
         failed_ = event.exitCode != ERROR_CANCELLED;
@@ -231,7 +234,7 @@ void Controller::selectProject(std::wstring file) {
         journal_.append(status_ + L"\n");
         return;
     }
-    if (state_.selectProject(file)) { journal_.clear(); lastBuildDuration_.reset(); buildProgress_.reset(); }
+    if (state_.selectProject(file)) { journal_.clear(); lastBuildDuration_.reset(); buildProgress_.reset(); buildSucceeded_ = false; }
     runSelectionRequested_ = false;
     status_ = readyStatus(state_);
     failed_ = false;
@@ -255,6 +258,7 @@ void Controller::build(BuildAction action) {
     journal_.clear();
     lastBuildDuration_.reset();
     buildProgress_.reset();
+    buildSucceeded_ = false;
     buildAction_ = action;
     runAfterBuild_ = action == BuildAction::BuildAndRun;
     cancelling_ = runSelectionRequested_ = false;
@@ -335,6 +339,7 @@ void Controller::applySettings(BuildSettings settings, std::wstring chosen, bool
     if (closing_ || operation_ != Operation::Idle) return;
     const bool changed = state_.settings.buildDirectory != settings.buildDirectory
         || state_.settings.configuration != settings.configuration;
+    if (state_.settings != settings) buildSucceeded_ = false;
     state_.settings = std::move(settings);
     if (selectionChanged) {
         state_.chosenTarget = std::move(chosen);

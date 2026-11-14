@@ -33,6 +33,7 @@ struct BuildSettings {
     std::wstring target;
     bool buildTests = false;
     bool cleanFirst = false;
+    bool operator==(const BuildSettings&) const = default;
 };
 
 struct Target {

@@ -28,9 +28,10 @@ configure_file(src/version.hpp.in generated/version.hpp @ONLY)
 configure_file(app.manifest.in app.manifest @ONLY)
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" APP_MANIFEST_PATH)
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/app.ico" APP_ICON_PATH)
+set(BUILD_SUCCEEDED_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/build-succeeded.ico")
 configure_file(app.rc.in app.rc @ONLY)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/app.rc" PROPERTIES
-    OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/assets/app.ico"
+    OBJECT_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/app.manifest;${APP_ICON_PATH};${BUILD_SUCCEEDED_ICON_PATH}"
 )
 
 add_executable(CMakeBuild WIN32
@@ -39,6 +40,7 @@ add_executable(CMakeBuild WIN32
     src/settings_dialog.cpp
     src/app_state.cpp
     src/platform.cpp
+    src/taskbar.cpp
     src/engine.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
 )
@@ -50,7 +52,7 @@ target_compile_definitions(CMakeBuild PRIVATE
     "$<$<CONFIG:Debug>:_DEBUG>"
 )
 target_link_libraries(CMakeBuild PRIVATE
-    fltk::fltk comdlg32 shell32 ole32 uuid user32 gdi32 dwmapi advapi32
+    fltk::fltk comdlg32 comctl32 shell32 ole32 uuid user32 gdi32 dwmapi advapi32
 )
 
 # Keep configuration/toolchain outputs separate so switching builds cannot

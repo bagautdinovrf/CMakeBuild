@@ -35,10 +35,10 @@ target_compile_definitions(FltkBench PRIVATE
 foreach(ui_harness IN ITEMS journal_ui run_ui native_dpi_ui FltkBench)
     # Exercise the real FLTK panel with the same manifest and platform helpers.
     target_sources(${ui_harness} PRIVATE
-        ../src/ui.cpp ../src/settings_dialog.cpp ../src/app_state.cpp ../src/platform.cpp
+        ../src/ui.cpp ../src/settings_dialog.cpp ../src/app_state.cpp ../src/platform.cpp ../src/taskbar.cpp
         "${CMAKE_CURRENT_BINARY_DIR}/generated/ui_manifest.rc")
     target_include_directories(${ui_harness} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-    target_link_libraries(${ui_harness} PRIVATE fltk::fltk comdlg32 shell32 ole32 uuid user32 gdi32 dwmapi)
+    target_link_libraries(${ui_harness} PRIVATE fltk::fltk comdlg32 comctl32 shell32 ole32 uuid user32 gdi32 dwmapi)
     if(MSVC)
         target_link_options(${ui_harness} PRIVATE /MANIFEST:NO)
     endif()

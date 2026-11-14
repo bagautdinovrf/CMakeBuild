@@ -1,6 +1,7 @@
 #pragma once
 #include "controller.hpp"
 #include "platform.hpp"
+#include "../../src/taskbar.hpp"
 #include <nana/gui/widgets/form.hpp>
 #include <nana/gui/widgets/button.hpp>
 #include <nana/gui/widgets/label.hpp>
@@ -68,6 +69,7 @@ private:
     nana::timer timer_;
     platform::DpiChangeHandler dpiHandler_;
     platform::WindowDragCancelHandler dragCancelHandler_;
+    platform::Taskbar taskbar_;
     nana::menu projects_, builds_, targets_, journalMenu_;
     Palette palette_;
     bool dark_{}, hidden_{}, autoScroll_{true}, wrap_{false}, layoutActive_{}, observedLogVisible_{}, runMenuOpen_{}, previewScale_{};

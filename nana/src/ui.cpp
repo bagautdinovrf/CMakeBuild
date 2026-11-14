@@ -445,6 +445,7 @@ Panel::Panel(AppState& state, bool hidden)
     // Textbox's outer focus/hover effect is independent of its editor border.
     nana::api::effects_edge_nimbus(journal_, nana::effects::edge_nimbus::none);
     bindKeys(form_); bindKeys(journal_);
+    if (!hidden_) taskbar_.bind(form_.native_handle());
     platform::configurePanelWindow(form_.native_handle());
     platform::setApplicationIcon(form_.native_handle());
     platform::setTopmost(form_.native_handle(), state_.pinned && !hidden_);
@@ -753,6 +754,7 @@ void Panel::refreshPanel(bool animate) {
     const bool idle = operation == Operation::Idle;
     const bool building = operation == Operation::Building;
     const bool running = operation == Operation::Running;
+    taskbar_.update(building, controller_.buildSucceeded(), progress ? &*progress : nullptr);
     const bool pulse = animate && building && !progress;
     if (pulse) animation_ = (animation_ + 1) % 50;
     // Compare borrowed strings on idle ticks; copy the snapshot only when

@@ -1,6 +1,7 @@
 #pragma once
 #include "app_state.hpp"
 #include "platform.hpp"
+#include "taskbar.hpp"
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Menu_Button.H>
@@ -104,6 +105,8 @@ private:
     std::wstring status_;
     std::optional<std::chrono::milliseconds> lastBuildDuration_;
     std::optional<BuildProgress> buildProgress_;
+    platform::Taskbar taskbar_;
+    bool buildSucceeded_ = false;
     unsigned progressPulse_ = 0;
     bool cleaning_ = false, lastDurationIsClean_ = false;
     bool configuring_ = false, lastDurationIsConfigure_ = false;
@@ -116,7 +119,8 @@ private:
     void editSettings();
     void activate(Control);
     void showBuildDuration(const Event&);
-    void resetBuildProgress();
+    void resetBuildIndicator();
+    void updateTaskbar();
     void drawBuildProgress();
     bool canQueueRun() const { return !closing_ && operation_==Operation::Building && !cleaning_ && !configuring_ && !cancelling_; }
     void draw() override;

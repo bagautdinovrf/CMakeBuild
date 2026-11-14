@@ -222,7 +222,6 @@ void Panel::checkEvents(void* data) {static_cast<Panel*>(data)->drainEvents();}
 int Panel::systemEvent(void* event,void* data) {if(platform::themeChanged(event)) static_cast<Panel*>(data)->updateTheme();return 0;}
 void Panel::show() {
     Fl_Double_Window::show();auto native=reinterpret_cast<void*>(fl_xid(this));
-    platform::configurePanelWindow(native);
     platform::restoreNativePosition(native,state_.x,state_.y);platform::setTopmost(native,state_.pinned);updateTheme();
 }
 void Panel::drainEvents() {
@@ -249,7 +248,7 @@ void Panel::drainEvents() {
 void Panel::closePanel() {
     runAfterBuild_=false;
     if(closing_) return;closing_=true;Fl::remove_check(checkEvents,this);Fl::remove_system_handler(systemEvent);
-    resetBuildProgress();
+    resetBuildIndicator();
     if(events_) {std::lock_guard lock(events_->mutex);events_->accepting=false;}
     // The worker only owns the queue mutex and never waits for the FLTK UI lock.
     if(engine_) {engine_->cancel();engine_.reset();}
@@ -294,6 +293,13 @@ void Panel::resize(int x,int y,int width,int height) {
 }
 void Panel::toggleLog() {state_.logVisible=!state_.logVisible;resize(x(),y(),w(),state_.logVisible ? state_.logHeight : compactHeight);save();updateControls();}
 int Panel::handle(int event) {
+    // FLTK delivers FL_SHOW with a valid HWND before its first ShowWindow call.
+    if(event==FL_SHOW) {
+        auto native=reinterpret_cast<void*>(fl_xid(this));
+        taskbar_.bind(native);
+        platform::configurePanelWindow(native);
+        updateTaskbar();
+    }
     if((event==FL_KEYDOWN || event==FL_SHORTCUT) && Fl::event_key()==FL_F+4 && Fl::event_alt()) {closePanel();return 1;}
     if(event==FL_KEYDOWN || event==FL_SHORTCUT) {
         const int modifiers=Fl::event_state()&(FL_CTRL|FL_ALT|FL_META|FL_SHIFT);
@@ -368,6 +374,7 @@ void Panel::setTheme(bool dark) {
 }
 void Panel::updateTheme() {setTheme(platform::darkTheme());}
 void Panel::updateControls() {
+    updateTaskbar();
     const bool busy=operation_!=Operation::Idle;
     const bool waitingForBuild=canQueueRun() && runAfterBuild_;
     auto enabled=[&](Control c,bool yes){if(yes) button(c).activate();else button(c).deactivate();};
@@ -416,7 +423,7 @@ void Panel::selectProject(std::wstring path) {
     if(_wcsicmp(std::filesystem::path(path).filename().c_str(),L"CMakeLists.txt")!=0) {failed_=true;status_=L"Нужен файл CMakeLists.txt";updateControls();return;}
     std::error_code error;
     if(!std::filesystem::is_regular_file(path,error)) {failed_=true;status_=L"Файл проекта не найден";appendLog(L"Файл проекта не найден: "+path+L"\n");updateControls();return;}
-    if(state_.selectProject(path)) {journal_->clear();lastBuildDuration_.reset();resetBuildProgress();}
+    if(state_.selectProject(path)) {journal_->clear();lastBuildDuration_.reset();resetBuildIndicator();}
     status_=L"Готов к сборке · "+state_.settings.configuration;failed_=false;save();updateControls();
 }
 bool Panel::chooseRecentProject(size_t index) {
@@ -454,9 +461,10 @@ void Panel::editSettings() {
 }
 void Panel::applySettings(BuildSettings settings,std::wstring chosen,bool selectionChanged) {
     const bool changed=state_.settings.buildDirectory!=settings.buildDirectory || state_.settings.configuration!=settings.configuration;
+    if(state_.settings!=settings) buildSucceeded_=false;
     state_.settings=std::move(settings);
     if(selectionChanged) {state_.chosenTarget=std::move(chosen);state_.chosenExecutable.clear();}
-    if(changed) {state_.restoreTargets();lastBuildDuration_.reset();resetBuildProgress();}
+    if(changed) {state_.restoreTargets();lastBuildDuration_.reset();resetBuildIndicator();}
     status_=state_.settings.cmakeFile.empty() ? L"Выберите CMakeLists.txt" : L"Готов к сборке · "+state_.settings.configuration;failed_=false;save();updateControls();
 }
 void Panel::build(bool cleanFirst,bool runAfter) {
@@ -466,10 +474,10 @@ void Panel::build(bool cleanFirst,bool runAfter) {
     if(state_.settings.cmakeFile.empty()) pickProject();
     if(state_.settings.cmakeFile.empty()) return;
     runAfterBuild_=runAfter;cancelling_=false;
-    journal_->clear();lastBuildDuration_.reset();resetBuildProgress();cleaning_=false;configuring_=false;failed_=false;status_=cleanFirst ? L"Подготовка пересборки…" : L"Подготовка сборки…";operation_=Operation::Building;
+    journal_->clear();lastBuildDuration_.reset();resetBuildIndicator();cleaning_=false;configuring_=false;failed_=false;status_=cleanFirst ? L"Подготовка пересборки…" : L"Подготовка сборки…";operation_=Operation::Building;
     Fl::add_timeout(.08,animateProgress,this);updateControls();
     auto settings=state_.settings;settings.cleanFirst=cleanFirst;if(cleanFirst) settings.target.clear();
-    if(!engine_->build(std::move(settings))) {runAfterBuild_=false;operation_=Operation::Idle;resetBuildProgress();failed_=true;status_=L"Не удалось начать сборку";updateControls();}
+    if(!engine_->build(std::move(settings))) {runAfterBuild_=false;operation_=Operation::Idle;resetBuildIndicator();failed_=true;status_=L"Не удалось начать сборку";updateControls();}
 }
 void Panel::clean() {
     if(closing_) return;
@@ -477,18 +485,18 @@ void Panel::clean() {
     if(state_.settings.cmakeFile.empty()) pickProject();
     if(state_.settings.cmakeFile.empty()) return;
     runAfterBuild_=false;cancelling_=false;
-    journal_->clear();lastBuildDuration_.reset();resetBuildProgress();cleaning_=true;configuring_=false;failed_=false;status_=L"Подготовка очистки…";operation_=Operation::Building;
+    journal_->clear();lastBuildDuration_.reset();resetBuildIndicator();cleaning_=true;configuring_=false;failed_=false;status_=L"Подготовка очистки…";operation_=Operation::Building;
     Fl::add_timeout(.08,animateProgress,this);updateControls();
-    if(!engine_->clean(state_.settings)) {operation_=Operation::Idle;resetBuildProgress();failed_=true;status_=L"Не удалось начать очистку";updateControls();}
+    if(!engine_->clean(state_.settings)) {operation_=Operation::Idle;resetBuildIndicator();failed_=true;status_=L"Не удалось начать очистку";updateControls();}
 }
 void Panel::configure() {
     if(closing_ || operation_!=Operation::Idle) return;
     if(state_.settings.cmakeFile.empty()) pickProject();
     if(state_.settings.cmakeFile.empty()) return;
     runAfterBuild_=false;cancelling_=false;
-    journal_->clear();lastBuildDuration_.reset();resetBuildProgress();cleaning_=false;configuring_=true;failed_=false;status_=L"Подготовка CMake…";operation_=Operation::Building;
+    journal_->clear();lastBuildDuration_.reset();resetBuildIndicator();cleaning_=false;configuring_=true;failed_=false;status_=L"Подготовка CMake…";operation_=Operation::Building;
     Fl::add_timeout(.08,animateProgress,this);updateControls();
-    if(!engine_->configure(state_.settings)) {operation_=Operation::Idle;resetBuildProgress();failed_=true;status_=L"Не удалось начать CMake";updateControls();}
+    if(!engine_->configure(state_.settings)) {operation_=Operation::Idle;resetBuildIndicator();failed_=true;status_=L"Не удалось начать CMake";updateControls();}
 }
 void Panel::showBuildActions() {
     if(operation_!=Operation::Idle) return;
@@ -559,9 +567,9 @@ void Panel::onEvent(Event event) {
     case EventKind::Progress:
         if(operation_!=Operation::Building || configuring_ || !event.progress || !event.progress->total || event.progress->completed>event.progress->total) return;
         if(buildProgress_ && buildProgress_->total==event.progress->total && event.progress->completed<buildProgress_->completed) return;
-        buildProgress_=event.progress;Fl::remove_timeout(animateProgress,this);redraw();return;
+        buildProgress_=event.progress;Fl::remove_timeout(animateProgress,this);updateTaskbar();redraw();return;
     case EventKind::BuildSucceeded:
-        resetBuildProgress();
+        resetBuildIndicator();buildSucceeded_=true;
         operation_=Operation::Idle;if(!event.targets.empty()) state_.targets=std::move(event.targets);
         std::erase_if(state_.targets,[](const Target& t){std::error_code e;return !std::filesystem::is_regular_file(t.executable,e);});
         if(state_.chosenTarget.empty() && state_.targets.size()==1) state_.selectRunTarget(0);
@@ -575,17 +583,17 @@ void Panel::onEvent(Event event) {
         break;
     case EventKind::CleanSucceeded:
         runAfterBuild_=false;
-        resetBuildProgress();operation_=Operation::Idle;state_.targets.clear();failed_=false;
+        resetBuildIndicator();operation_=Operation::Idle;state_.targets.clear();failed_=false;
         status_=event.text.empty() ? L"Очистка завершена" : event.text;showBuildDuration(event);save();break;
     case EventKind::ConfigureSucceeded:
-        runAfterBuild_=false;resetBuildProgress();operation_=Operation::Idle;failed_=false;
+        runAfterBuild_=false;resetBuildIndicator();operation_=Operation::Idle;failed_=false;
         state_.targets=std::move(event.targets);
         std::erase_if(state_.targets,[](const Target& t){std::error_code error;return !std::filesystem::is_regular_file(t.executable,error);});
         if(state_.chosenTarget.empty() && state_.targets.size()==1) state_.selectRunTarget(0);
         status_=event.text.empty() ? L"CMake завершён" : event.text;showBuildDuration(event);save();break;
     case EventKind::BuildFailed: case EventKind::CleanFailed: case EventKind::ConfigureFailed:
         runAfterBuild_=false;
-        resetBuildProgress();
+        resetBuildIndicator();
         operation_=Operation::Idle;status_=event.text.empty() ? event.kind==EventKind::ConfigureFailed ? L"CMake завершился с ошибкой" : event.kind==EventKind::CleanFailed ? L"Очистка завершилась с ошибкой" : L"Сборка завершилась с ошибкой" : event.text;failed_=event.exitCode!=ERROR_CANCELLED;
         showBuildDuration(event);
         if(failed_ && !state_.logVisible) toggleLog();
@@ -605,8 +613,11 @@ void Panel::showBuildDuration(const Event& event) {
     lastDurationIsConfigure_=event.kind==EventKind::ConfigureSucceeded || event.kind==EventKind::ConfigureFailed;
     if(lastBuildDuration_) appendLog(std::wstring(lastDurationIsConfigure_ ? L"\nВремя CMake: " : lastDurationIsClean_ ? L"\nВремя очистки: " : L"\nВремя сборки: ")+durationText(*lastBuildDuration_)+L"\n");
 }
-void Panel::resetBuildProgress() {
-    Fl::remove_timeout(animateProgress,this);buildProgress_.reset();progressPulse_=0;
+void Panel::resetBuildIndicator() {
+    Fl::remove_timeout(animateProgress,this);buildProgress_.reset();progressPulse_=0;buildSucceeded_=false;
+}
+void Panel::updateTaskbar() {
+    taskbar_.update(operation_==Operation::Building,buildSucceeded_,buildProgress_ ? &*buildProgress_ : nullptr);
 }
 void Panel::animateProgress(void* data) {
     auto& panel=*static_cast<Panel*>(data);
