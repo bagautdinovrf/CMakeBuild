@@ -1442,7 +1442,7 @@ struct Engine::Impl {
             if (mingw.empty()) throw Failure(L"Не найден MinGW g++.exe. Добавьте папку MinGW/bin в PATH.", ERROR_FILE_NOT_FOUND);
             prependPath(environment, mingw.parent_path());
         }
-        addRuntimePaths(environment, cache);
+        if (!configureOnly) addRuntimePaths(environment, cache);
         const auto cachedMake = executableOnPath(cacheValue(cache, L"CMAKE_MAKE_PROGRAM"), environment);
         if (!cachedMake.empty()) prependPath(environment, cachedMake.parent_path());
         if (needsConfigure) {
@@ -1450,6 +1450,10 @@ struct Engine::Impl {
             if (!ninja.empty()) prependPath(environment, ninja.parent_path());
             std::vector<std::wstring> configure{ L"-S", source.wstring(), L"-B", buildDirectory.wstring(),
                 L"-DCMAKE_BUILD_TYPE=" + configuration };
+            if (configureOnly) {
+                configure.emplace_back(L"--fresh");
+                log(L"CMake --fresh пересоздаёт кэш и файлы конфигурации. Требуется CMake 3.24 или новее.");
+            }
             // Explicit values also override an existing cache where CTest enabled tests.
             const std::wstring testSwitch = settings.buildTests ? L"ON" : L"OFF";
             configure.emplace_back(L"-DBUILD_TESTING:BOOL=" + testSwitch);
@@ -1475,6 +1479,23 @@ struct Engine::Impl {
                     if (fileExists(gcc)) configure.emplace_back(L"-DCMAKE_C_COMPILER=" + gcc.wstring());
                 }
             } else {
+                if (configureOnly) {
+                    // --fresh clears generator settings as well as package paths.
+                    configure.insert(configure.end(), {L"-G", generator});
+                    const auto platform = cacheValue(cache, L"CMAKE_GENERATOR_PLATFORM");
+                    const auto toolset = cacheValue(cache, L"CMAKE_GENERATOR_TOOLSET");
+                    const auto instance = cacheValue(cache, L"CMAKE_GENERATOR_INSTANCE");
+                    if (!platform.empty()) configure.insert(configure.end(), {L"-A", platform});
+                    if (!toolset.empty()) configure.insert(configure.end(), {L"-T", toolset});
+                    if (!instance.empty()) configure.emplace_back(L"-DCMAKE_GENERATOR_INSTANCE=" + instance);
+                    if (!cachedMake.empty()) configure.emplace_back(L"-DCMAKE_MAKE_PROGRAM:FILEPATH=" + cachedMake.wstring());
+                    if (!contains(generator, L"Visual Studio")) {
+                        for (const wchar_t* key : {L"CMAKE_C_COMPILER", L"CMAKE_CXX_COMPILER"}) {
+                            const auto compiler = cacheValue(cache, key);
+                            if (fileExists(compiler)) configure.emplace_back(std::wstring(L"-D") + key + L":FILEPATH=" + compiler);
+                        }
+                    }
+                }
                 log(L"Сохраняем генератор из CMakeCache.txt: " + generator);
             }
             emit(EventKind::Status, L"Поиск установленных Qt…");

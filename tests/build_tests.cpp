@@ -665,24 +665,31 @@ void checkCustomCMakeArguments(const fs::path& root, const Options& options) {
     }
     std::cout << "[ PASS ] configuration_field_wins_over_custom_build_type_and_unset" << std::endl;
 
-    std::cout << "[ RUN ] standalone_configure_accepts_custom_arguments_without_building" << std::endl;
+    std::cout << "[ RUN ] standalone_configure_resets_cache_and_applies_custom_arguments_without_building" << std::endl;
     const auto standalone = customArgumentsProject(root, L"standalone custom CMake");
+    buildArguments(standalone, options,
+        L"-DWINDEPLOYQT_EXECUTABLE:FILEPATH=C:/removed-qt/bin/windeployqt.exe", true, false, true);
+    require(readCache(standalone.build).at("WINDEPLOYQT_EXECUTABLE") == "C:/removed-qt/bin/windeployqt.exe",
+        "Cannot seed the previous configuration with an obsolete deployment tool.");
     const auto preload = standalone.source / L"начальные параметры.cmake";
     write(preload, "set(CUSTOM_PRELOADED \"cache script value\" CACHE STRING \"Preloaded fixture\")\n");
     const auto installPrefix = (standalone.build / L"install prefix").generic_wstring();
     const auto standaloneArguments = arguments + L" -C \"" + preload.wstring()
         + L"\" --no-warn-unused-cli --install-prefix \"" + installPrefix + L"\"";
     const auto configured = buildArguments(standalone, options, standaloneArguments, true, false, true);
+    const auto freshCache = readCache(standalone.build);
+    require(!freshCache.contains("WINDEPLOYQT_EXECUTABLE"),
+        "Standalone configure retained an obsolete entry from the previous CMake cache.");
     require(configured.targets.size() == 1 && !fs::exists(configured.targets.front().executable)
         && read(standalone.build / L"custom-text.txt") == utf8(text)
-        && readCache(standalone.build).at("CUSTOM_PRELOADED") == "cache script value"
-        && readCache(standalone.build).at("CMAKE_INSTALL_PREFIX") == utf8(installPrefix),
+        && freshCache.at("CUSTOM_PRELOADED") == "cache script value"
+        && freshCache.at("CMAKE_INSTALL_PREFIX") == utf8(installPrefix),
         "Standalone configure did not apply the custom argument without compiling the executable.");
     const auto beforeBuild = read(standalone.source / L"configure-invocations.txt");
     buildArguments(standalone, options, standaloneArguments, false);
     require(read(standalone.source / L"configure-invocations.txt") == beforeBuild,
         "Build could not reuse custom arguments recorded by standalone configure.");
-    std::cout << "[ PASS ] standalone_configure_accepts_custom_arguments_without_building" << std::endl;
+    std::cout << "[ PASS ] standalone_configure_resets_cache_and_applies_custom_arguments_without_building" << std::endl;
 }
 
 void checkRejectedCMakeArguments(const fs::path& root, const Options& options) {
